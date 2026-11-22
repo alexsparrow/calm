@@ -1,11 +1,12 @@
 # calm
 
-**A calendar built on a grammar of time.**
+**A calendar that's fast, powerful and pleasant to use.**
 
-Most calendars are a handful of hard-coded screens: day, week, month. In calm, every view is a
-small declarative spec (how days are arranged, what the axes mean, how overlaps resolve, what
-mark each event becomes). Switching views *morphs* the same events from one layout to the next,
-and you can edit the grammar to make views of your own.
+Calendars are where your days go, yet most of them are slow web pages with three hard-coded
+screens. calm is a native desktop calendar for Google Calendar. It opens instantly, works
+offline, and every interaction is animated at the speed of your display. It shows your time the
+way you want to see it, from a single day to the whole year in one continuous zoom, and it never
+changes your calendar by accident.
 
 ![The Grid view: a week of events with all-day bars and two time zones](docs/images/grid.png)
 
@@ -20,24 +21,41 @@ and you can edit the grammar to make views of your own.
 </tr>
 </table>
 
-## What's in it
+## Fast
 
-- **Views you can change.** Grid, Lanes, Energy, Dial and Density are built in, all written in
-  the same KDL grammar. Press `E` to edit the current one, or write your own in `calm.kdl`.
-- **One continuous zoom** from a day to a year. Events stay events as long as there's room for
-  them, then fold into coloured day cells.
-- **Colour that means something.** Colour by calendar, hours booked, demand, strain or free time.
-  You can also mix them: strength from a measure, hue from the calendar.
-- **Your energy.** A sleep and circadian model (Åkerstedt & Folkard's three-process model) or a
+- **Instant, and offline.** Google calendars sync incrementally into a local SQLite cache, so
+  calm opens straight away and works on a plane. iCal feeds and files work too.
+- **Native and GPU-drawn.** Built in Rust on [gpui](https://www.gpui.rs), Zed's UI framework.
+  Every change of view or zoom is a spring animation, and nothing is drawn once everything settles.
+- **Keyboard friendly.** Views, zoom, navigation and panels all have keys. You can create an event
+  without touching the mouse, and nudge the selected one by a step or a day.
+
+## Powerful
+
+- **A grammar of time.** Most calendars are a handful of fixed screens. In calm, every view is a
+  small declarative spec: how days are arranged, what the axes mean, how overlaps resolve, and
+  what mark each event becomes. Switching views *morphs* the same events from one layout to the
+  next. Grid, Lanes, Energy, Dial and Density are built in, all written in the same KDL grammar;
+  press `E` to edit the one you're looking at, or write your own in `calm.kdl`. The idea is in
+  [DESIGN.md](DESIGN.md).
+- **One continuous zoom** from a day to a year. Events stay events while there's room for them,
+  then fold into coloured day cells.
+- **Colour that means something.** Colour by calendar, hours booked, demand, strain or free time,
+  or mix them: strength from a measure, hue from the calendar.
+- **Your energy.** A sleep and circadian model (Åkerstedt & Folkard's three-process model), or a
   curve you draw. Demanding meetings drain it, and calm marks events that ask more than you'll
   have. It can run as a rail beside each day, alongside daylight.
-- **Time zones.** Extra hour columns, flags for labels, and every event's time in each zone.
-- **Google Calendar, offline.** Incremental sync into a local SQLite cache, so calm opens
-  instantly and works on a plane. iCal feeds and files work too.
-- **Deliberate editing.** Clicks and drags only ever select. To change things you enter a mode,
-  and every change goes through an outbox you can review before it's sent.
-- **Fast.** Built on [gpui](https://www.gpui.rs) (Zed's GPU UI framework), with spring animation
-  throughout. No frames are drawn once everything settles.
+- **Time zones.** Extra hour columns with flags for labels, and every event's time in each zone.
+- **Scriptable.** A command line for events and config, so agents and scripts can propose
+  changes for you to review.
+
+## Pleasant
+
+- **Calm by default.** Quiet colours, light and dark themes (or your own), and a translucent
+  window if you like.
+- **No accidental edits.** Clicks and drags only ever select. To change things you enter a mode,
+  and every change goes through an outbox you can review before it's sent, with Undo.
+- **Live config.** One file, applied as you save it, with clear errors when something's wrong.
 
 ## Editing
 
