@@ -1,6 +1,8 @@
 //! Normalized event model and a deterministic synthetic dataset anchored on
 //! the real current date. Day indices count from `Dataset::origin`, a Monday.
 
+use std::collections::HashMap;
+
 use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use gpui::SharedString;
 
@@ -121,6 +123,30 @@ pub struct Event {
     pub group: u32,
     /// Demand above your energy at its midpoint (see `Dataset::set_energy`).
     pub strain: f32,
+    /// For all-day events, this day's piece of it; `None` for timed events.
+    pub all_day: Option<AllDay>,
+}
+
+/// One day's piece of an all-day event. Multi-day events are a piece per day (one
+/// group), each knowing its stack row and whether the bar continues either side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AllDay {
+    /// Stack position, the same on every day of the event (see `Dataset::new`).
+    pub row: u16,
+    pub prev: bool,
+    pub next: bool,
+}
+
+/// An all-day event as one piece per day in `[first, end)` (days outside the data range skipped).
+fn all_day_pieces(e: Event, first: i32, end: i32) -> impl Iterator<Item = Event> {
+    let end = end.max(first + 1);
+    (first.max(0)..end.min(DAYS)).map(move |d| Event {
+        day: d,
+        start_min: 0.,
+        dur_min: 1440.,
+        all_day: Some(AllDay { row: 0, prev: d > first, next: d + 1 < end }),
+        ..e.clone()
+    })
 }
 
 impl Event {
@@ -139,8 +165,8 @@ pub struct Dataset {
     pub events: Vec<Event>,
     /// `events[day_start[d]..day_start[d + 1]]` are the events on day `d`.
     pub day_start: Vec<usize>,
-    /// All-day events per day: kept out of the time grid until there is a horizon track.
-    pub all_day: Vec<u16>,
+    /// Rows of all-day bars each day needs (the most stacked on it).
+    pub all_day_rows: Vec<u8>,
     /// Each day's energy curve, `energy::SAMPLES` per day, back to back.
     energy: Vec<f32>,
 }
@@ -224,6 +250,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             notes: None,
             group: events.len() as u32,
             strain: 0.,
+            all_day: None,
         });
     };
 
@@ -288,7 +315,42 @@ pub fn generate(multiplier: usize) -> Dataset {
         };
     }
 
-    Dataset::new(origin, today, events, vec![0; DAYS as usize])
+    // All-day: weekly to monthly markers, and some overlapping multi-day stretches near today.
+    let group = |events: &Vec<Event>| events.len() as u32 + 1_000_000;
+    let all_day = |events: &mut Vec<Event>, title: &str, calendar: usize, first: i32, days: i32, status: Status| {
+        let e = Event {
+            title: SharedString::from(title.to_string()),
+            calendar,
+            day: first,
+            start_min: 0.,
+            dur_min: 1440.,
+            energy: 0.2,
+            status,
+            location: None,
+            notes: None,
+            group: group(events),
+            strain: 0.,
+            all_day: None,
+        };
+        events.extend(all_day_pieces(e, first, first + days));
+    };
+    let week = today - today.rem_euclid(7);
+    for w in (-60..60).map(|k| week + 7 * k) {
+        if w.rem_euclid(28) == 0 {
+            all_day(&mut events, "Bank holiday", 2, w, 1, Status::Confirmed);
+        }
+        if w.rem_euclid(35) == 7 {
+            all_day(&mut events, "Conference", 0, w + 1, 3, Status::Confirmed);
+        }
+        if w.rem_euclid(49) == 14 {
+            all_day(&mut events, "Birthday", 1, w + 4, 1, Status::Confirmed);
+        }
+    }
+    all_day(&mut events, "Offsite", 0, week + 2, 2, Status::Confirmed);
+    all_day(&mut events, "Grandparents visiting", 2, week + 3, 4, Status::Confirmed);
+    all_day(&mut events, "Bins", 1, week + 1, 1, Status::Tentative);
+
+    Dataset::new(origin, today, events)
 }
 
 /// How far an event's demand exceeds your energy at its midpoint (precomputed per day).
@@ -322,7 +384,7 @@ fn range() -> (NaiveDate, i32) {
 }
 
 impl Dataset {
-    fn new(origin: NaiveDate, today: i32, mut events: Vec<Event>, all_day: Vec<u16>) -> Self {
+    fn new(origin: NaiveDate, today: i32, mut events: Vec<Event>) -> Self {
         // Day order lets views touch only the days they can see.
         events.sort_by(|a, b| a.day.cmp(&b.day).then(a.start_min.total_cmp(&b.start_min)));
         let mut day_start = vec![0; DAYS as usize + 1];
@@ -332,7 +394,33 @@ impl Dataset {
         for d in 0..DAYS as usize {
             day_start[d + 1] += day_start[d];
         }
-        let mut data = Dataset { origin, today, events, day_start, all_day, energy: Vec::new() };
+        // Stack all-day events: earliest (then longest) first, each in the lowest row free
+        // on every day it covers, so a multi-day bar keeps its row.
+        let mut spans: HashMap<u32, (i32, i32, Vec<usize>)> = HashMap::new();
+        for (i, e) in events.iter().enumerate().filter(|(_, e)| e.all_day.is_some()) {
+            let s = spans.entry(e.group).or_insert((e.day, e.day, Vec::new()));
+            s.0 = s.0.min(e.day);
+            s.1 = s.1.max(e.day);
+            s.2.push(i);
+        }
+        let mut order: Vec<(i32, i32, Vec<usize>)> = spans.into_values().collect();
+        order.sort_by_key(|s| (s.0, -(s.1 - s.0)));
+        let mut used = vec![0u64; DAYS as usize];
+        let mut all_day_rows = vec![0u8; DAYS as usize];
+        for (first, last, pieces) in order {
+            let free = |r: u32| (first..=last).all(|d| used[d as usize] & (1 << r) == 0);
+            let row = (0..63).find(|&r| free(r)).unwrap_or(63);
+            for d in first..=last {
+                used[d as usize] |= 1 << row;
+                all_day_rows[d as usize] = all_day_rows[d as usize].max(row as u8 + 1);
+            }
+            for i in pieces {
+                if let Some(a) = &mut events[i].all_day {
+                    a.row = row as u16;
+                }
+            }
+        }
+        let mut data = Dataset { origin, today, events, day_start, all_day_rows, energy: Vec::new() };
         data.set_energy(&crate::energy::EnergyModel::default());
         data
     }
@@ -343,14 +431,15 @@ impl Dataset {
         self.energy = Vec::with_capacity(DAYS as usize * SAMPLES);
         for d in 0..DAYS {
             let r = self.on_day(d);
-            let curve = model.day(self.events[r].iter());
+            let curve = model.day(self.events[r].iter().filter(|e| e.all_day.is_none()));
             self.energy.extend(curve);
         }
         for i in 0..self.events.len() {
             let e = &self.events[i];
             let yours = self.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
             // While you'd be asleep there is no energy to measure against: not strain.
-            self.events[i].strain = if yours > 0.01 { e.energy - yours } else { 0. };
+            // All day isn't time spent, and while you'd be asleep there is nothing to measure against.
+            self.events[i].strain = if yours > 0.01 && e.all_day.is_none() { e.energy - yours } else { 0. };
         }
     }
 
@@ -383,21 +472,32 @@ impl Dataset {
 pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of: impl Fn(&str) -> usize, calendars: &[Calendar]) -> Dataset {
     let (origin, today) = range();
     let mut events = Vec::new();
-    let mut all_day = vec![0u16; DAYS as usize];
     let day_of = |d: NaiveDate| (d - origin).num_days() as i32;
     for (group, s) in occurrences.iter().enumerate() {
         let o = &s.occ;
         let calendar = calendar_of(&s.source);
+        let event = |day: i32, start_min: f32, dur_min: f32| Event {
+            title: SharedString::from(o.summary.clone()),
+            calendar,
+            day,
+            start_min,
+            dur_min,
+            energy: calendars.get(calendar).map_or(0.4, |c| c.demand),
+            status: if o.status.as_deref() == Some("TENTATIVE") { Status::Tentative } else { Status::Confirmed },
+            location: o.location.clone().map(SharedString::from),
+            notes: o.description.as_ref().map(|d| {
+                let d: String = d.chars().take(280).collect();
+                SharedString::from(d)
+            }),
+            group: group as u32,
+            strain: 0.,
+            all_day: None,
+        };
         if o.all_day {
-            let mut d = o.start.date_naive();
             // End is exclusive; a zero-length all-day event still covers its date.
-            let last = o.end.date_naive().max(d + Duration::days(1));
-            while d < last {
-                if let Some(c) = all_day.get_mut(day_of(d) as usize) {
-                    *c = c.saturating_add(1);
-                }
-                d += Duration::days(1);
-            }
+            let first = day_of(o.start.date_naive());
+            let end = day_of(o.end.date_naive()).max(first + 1);
+            events.extend(all_day_pieces(event(first, 0., 1440.), first, end));
             continue;
         }
         let (start, end) = (o.start.with_timezone(&Local), o.end.with_timezone(&Local).max(o.start.with_timezone(&Local)));
@@ -411,22 +511,7 @@ pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of:
                 let start_min = seg.time().num_seconds_from_midnight() as f32 / 60.;
                 // Zero-length events still need to be visible.
                 let dur_min = ((seg_end - seg).num_seconds() as f32 / 60.).max(15.);
-                events.push(Event {
-                    title: SharedString::from(o.summary.clone()),
-                    calendar,
-                    day,
-                    start_min,
-                    dur_min,
-                    energy: calendars.get(calendar).map_or(0.4, |c| c.demand),
-                    status: if o.status.as_deref() == Some("TENTATIVE") { Status::Tentative } else { Status::Confirmed },
-                    location: o.location.clone().map(SharedString::from),
-                    notes: o.description.as_ref().map(|d| {
-                        let d: String = d.chars().take(280).collect();
-                        SharedString::from(d)
-                    }),
-                    group: group as u32,
-                    strain: 0.,
-                });
+                events.push(event(day, start_min, dur_min));
             }
             match midnight {
                 Some(m) if m < end => seg = m,
@@ -434,11 +519,53 @@ pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of:
             }
         }
     }
-    Dataset::new(origin, today, events, all_day)
+    Dataset::new(origin, today, events)
 }
 
 /// The instants the app's data range covers.
 pub fn generate_span() -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
     let (origin, _) = range();
-    Dataset::new(origin, 0, Vec::new(), Vec::new()).span()
+    Dataset::new(origin, 0, Vec::new()).span()
+}
+
+#[cfg(test)]
+mod all_day_tests {
+    use super::*;
+
+    fn event(title: &str, group: u32) -> Event {
+        Event {
+            title: title.to_string().into(),
+            calendar: 0,
+            day: 0,
+            start_min: 0.,
+            dur_min: 1440.,
+            energy: 0.5,
+            status: Status::Confirmed,
+            location: None,
+            notes: None,
+            group,
+            strain: 0.,
+            all_day: None,
+        }
+    }
+
+    #[test]
+    fn multi_day_events_stack_and_join() {
+        let mut events: Vec<Event> = Vec::new();
+        events.extend(all_day_pieces(event("Trip", 1), 10, 14)); // days 10–13
+        events.extend(all_day_pieces(event("Holiday", 2), 12, 13)); // day 12
+        events.extend(all_day_pieces(event("Visit", 3), 14, 16)); // days 14–15: row 0 is free again
+        let data = Dataset::new(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(), 0, events);
+        let piece = |title: &str, day: i32| data.on_day(day).map(|i| &data.events[i]).find(|e| e.title.as_ref() == title).and_then(|e| e.all_day).unwrap();
+        // The trip keeps row 0 on every day; the holiday stacks above it; the visit reuses row 0.
+        assert!((10..14).all(|d| piece("Trip", d).row == 0));
+        assert_eq!(piece("Holiday", 12).row, 1);
+        assert_eq!(piece("Visit", 14).row, 0);
+        // Pieces know where the bar carries on.
+        assert!(!piece("Trip", 10).prev && piece("Trip", 10).next);
+        assert!(piece("Trip", 13).prev && !piece("Trip", 13).next);
+        assert_eq!((data.all_day_rows[12], data.all_day_rows[14], data.all_day_rows[9]), (2, 1, 0));
+        // All day is not time spent: no strain.
+        assert!(data.events.iter().all(|e| e.strain == 0.));
+    }
 }

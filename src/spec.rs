@@ -228,6 +228,9 @@ pub struct Spec {
     /// (`rail`: width and colour follow it; `strip`: colour only).
     pub rail: Ref,
     pub rail_style: Ref,
+    /// Whether all-day events show: as bars above the time axis, rings inside dials,
+    /// leading rows in lists, or stripes across aggregate cells.
+    pub all_day: bool,
 }
 
 /// Current param values for one view, by name.

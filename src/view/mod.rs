@@ -505,6 +505,11 @@ impl CalmView {
     /// Inner coordinates of a cell in lens `p`.
     fn inner(&self, p: usize, mut cell: [f32; 4]) -> Inner {
         let spec = &self.views[p];
+        // Room above the time axis for all-day bars.
+        let band = self.band_rows_at(p, cell);
+        if band > 0 {
+            cell[1] = (cell[1] + band as f32 * scene::BAND_ROW + 3.).min(cell[3] - 8.);
+        }
         // Room for the energy rail along the time axis.
         if self.rail_of(p).is_some() {
             if spec.y == Axis::TimeOfDay {
@@ -1758,5 +1763,33 @@ impl CalmView {
     /// Rebuilds the theme from the current choices.
     pub(super) fn retheme(&mut self) {
         self.theme = theme_for(self.theme_override, self.system_dark, self.translucent, &self.calendars, &self.looks);
+    }
+}
+
+impl CalmView {
+    /// Rows of all-day bars view `p` sets aside above the time axis on `day`'s line: as many
+    /// as the most stacked day of that line needs, so the time axis lines up along a line
+    /// (a week in Grid; just the day where each day is its own line). None unless the view
+    /// shows all-day events and draws timed marks (lists and aggregates show them their own
+    /// way; dials put them in the centre).
+    pub(super) fn band_rows(&self, p: usize, day: i32) -> u8 {
+        let spec = &self.views[p];
+        let mark = self.lenses[p].mark;
+        if !spec.all_day || spec.coord != Coord::Cartesian || !matches!(mark, Mark::Block | Mark::Pill) {
+            return 0;
+        }
+        let per_line = spec.facet.per_line.max(1);
+        let start = day.div_euclid(per_line) * per_line;
+        (start..start + per_line).filter_map(|d| self.data.all_day_rows.get(d as usize).copied()).max().unwrap_or(0)
+    }
+
+    /// `band_rows` for whichever day the cell `cell` shows.
+    fn band_rows_at(&self, p: usize, cell: [f32; 4]) -> u8 {
+        let spec = &self.views[p];
+        if !spec.all_day || spec.coord != Coord::Cartesian || !matches!(self.lenses[p].mark, Mark::Block | Mark::Pill) {
+            return 0;
+        }
+        let centre = ((cell[0] + cell[2]) * 0.5, (cell[1] + cell[3]) * 0.5);
+        self.arr_of(p, false).day_at(centre).map_or(0, |d| self.band_rows(p, d))
     }
 }

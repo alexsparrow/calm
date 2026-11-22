@@ -28,6 +28,9 @@ pub enum Kind {
     Row { rank: u16 },
     /// The whole cell (aggregated away).
     Cell,
+    /// An all-day piece, stacked in `row`: a band above the time axis, a ring inside a
+    /// dial, or a stripe across an aggregate cell, depending on the mark and coordinates.
+    AllDay { row: u16, prev: bool, next: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,18 +78,29 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
         }
     }
     let lanes = next.max(1) as f32;
-    let shown = |e: &Event| !hidden[e.calendar];
+    let shown = |e: &Event| !hidden[e.calendar] && (e.all_day.is_none() || spec.all_day);
     let alpha = |e: &Event| match (shown(e), e.status) {
         (false, _) => 0.,
         (true, Status::Tentative) => 0.6,
         (true, Status::Confirmed) => 1.,
     };
 
+    // All-day pieces: their own kind at every level of detail except lists, where they lead.
+    let all_day = |e: &Event| {
+        e.all_day.map(|a| Target {
+            day: e.day,
+            g: [0., 1., 0., 1.],
+            kind: Kind::AllDay { row: a.row, prev: a.prev, next: a.next },
+            alpha: alpha(e),
+            label: if mark == Mark::Heat || spec.coord == crate::spec::Coord::Polar { LabelMode::Hidden } else { LabelMode::Row },
+            conflict: false,
+        })
+    };
     match mark {
         Mark::Heat => {
             return events
                 .iter()
-                .map(|e| Target { day: e.day, g: [0., 1., 0., 1.], kind: Kind::Cell, alpha: 0., label: LabelMode::Hidden, conflict: false })
+                .map(|e| all_day(e).unwrap_or(Target { day: e.day, g: [0., 1., 0., 1.], kind: Kind::Cell, alpha: 0., label: LabelMode::Hidden, conflict: false }))
                 .collect();
         }
         Mark::List => {
@@ -103,7 +117,9 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
                     j += 1;
                 }
                 let mut idx: Vec<usize> = (i..j).filter(|&k| shown(&events[k])).collect();
-                idx.sort_by(|&a, &b| events[a].start_min.total_cmp(&events[b].start_min));
+                // All day first (in stack order), then by start.
+                let key = |k: usize| (events[k].all_day.map_or(u16::MAX, |a| a.row), events[k].start_min);
+                idx.sort_by(|&a, &b| key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal));
                 for (rank, k) in idx.into_iter().enumerate() {
                     out[k].kind = Kind::Row { rank: rank as u16 };
                 }
@@ -127,7 +143,7 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
         .map(|e| {
             let (u0, u1) = band(spec.x, e, &lane_of, lanes);
             let (v0, v1) = band(spec.y, e, &lane_of, lanes);
-            Target { day: e.day, g: [u0, u1, v0, v1], kind, alpha: alpha(e), label, conflict: false }
+            all_day(e).unwrap_or(Target { day: e.day, g: [u0, u1, v0, v1], kind, alpha: alpha(e), label, conflict: false })
         })
         .collect();
 
@@ -144,7 +160,8 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
         return out;
     }
     let (t_lo, _, c_lo, _) = axes;
-    let mut order: Vec<usize> = (0..out.len()).filter(|&i| shown(&events[i])).collect();
+    // All-day pieces stay out of the time axis's lanes.
+    let mut order: Vec<usize> = (0..out.len()).filter(|&i| shown(&events[i]) && events[i].all_day.is_none()).collect();
     order.sort_by(|&a, &b| {
         let (ta, tb) = (&out[a], &out[b]);
         ta.day.cmp(&tb.day).then(ta.g[c_lo].total_cmp(&tb.g[c_lo])).then(ta.g[t_lo].total_cmp(&tb.g[t_lo]))

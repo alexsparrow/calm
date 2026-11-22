@@ -91,6 +91,7 @@ Required: `facet`, `mark`, and `stops` with at least one `stop`.
 | `param …` | | A param just for this view (see below). |
 | `color measure=… split=… compose=… palette=…` | literal or `"$param"` | What colours marks. See below. |
 | `detail day-span=…` | `#true`, `#false` or `"$param"` | The first-start → last-end bar inside aggregate cells. |
+| `all-day "shown"` | `shown` (default), `hidden` | All-day events, drawn to suit the mark: bars in a band above the time axis (multi-day events as one bar, stacked so each keeps its row), rings inside a dial's centre, leading rows in lists, and stripes along the top of aggregate cells. They don't count towards energy, strain or the hours-based colour measures. |
 | `rail show=… style=…` | `show`: `off` (default), `energy`, `daylight`; `style`: `rail` (default) or `strip` | A series beside each day's time axis. `energy` uses the Demand colour scale, so an event coloured by Demand matches the rail when its demand matches your energy, and strained events get a dot on it. `daylight` is the sun's elevation where you are (night → dawn → full day). `rail` widens with the value; `strip` is colour only. Needs a cartesian time axis. Grid shows energy by default; change it in the editor (`E`). |
 
 ### Colour

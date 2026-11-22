@@ -890,6 +890,7 @@ impl Loader {
         let mut color = None;
         let mut day_span = Ref::Lit("false".into());
         let (mut rail, mut rail_style) = (Ref::Lit("off".into()), Ref::Lit("rail".into()));
+        let mut all_day = true;
 
         for child in Self::children(node) {
             let off = child.span().offset();
@@ -1027,6 +1028,12 @@ impl Loader {
                         };
                     }
                 }
+                "all-day" => {
+                    self.check_props(at, child, &[]);
+                    if let Some(s) = self.arg_str(at, child, 0, "shown or hidden") {
+                        all_day = self.choice(at, child.span().offset(), "all-day", &s, &[("shown", true), ("hidden", false)]).unwrap_or(all_day);
+                    }
+                }
                 "rail" => {
                     // A series beside each day's time axis: `rail show="energy" style="rail"`.
                     self.check_props(at, child, &["show", "style"]);
@@ -1038,7 +1045,7 @@ impl Loader {
                     }
                 }
                 other => {
-                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "color", "detail", "rail"];
+                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "color", "detail", "rail", "all-day"];
                     self.err(at, off, format!("unknown node `{other}` in view{}", suggest(other, &known)));
                 }
             }
@@ -1082,7 +1089,7 @@ impl Loader {
         if self.diags.len() > errors_before {
             return None;
         }
-        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, color, day_span, rail, rail_style })
+        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, color, day_span, rail, rail_style, all_day })
     }
 }
 

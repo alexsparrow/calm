@@ -488,6 +488,7 @@ impl CalmView {
             let date = self.data.date(e.day);
             let pieces = self.group_of(e.group);
             let when = match (pieces.first(), pieces.last()) {
+                _ if e.all_day.is_some() => self.all_day_span(e),
                 // Crosses midnight: from the first piece's start to the last piece's end.
                 (Some(&a), Some(&b)) if a != b => {
                     let (a, b) = (&self.data.events[a], &self.data.events[b]);
@@ -674,11 +675,12 @@ impl CalmView {
                         .flex_col()
                         .gap(px(4.))
                         .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(date.format("%A %-d %B").to_string()))
-                        .child(row(format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into()))
+                        .child(row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }))
                         .children(zone_rows)
                         .children(e.location.clone().map(row)),
                 )
-                .child({
+                // Energy only means something for time you spend.
+                .when(e.all_day.is_none(), |d| d.child({
                     let yours = self.data.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
                     let meter = |label: &'static str, level: f32, color: Hsla| {
                         div()
@@ -705,7 +707,7 @@ impl CalmView {
                         .when(crate::model::strain(e) >= crate::model::STRAIN, |d| {
                             d.child(div().text_size(px(12.)).text_color(th.now).child("Demanding work in a usual energy dip"))
                         })
-                })
+                }))
                 .children(e.notes.clone().map(|n| div().flex().flex_col().gap(px(6.)).child(section("Notes")).child(row(n))))
                 .when(!overlaps.is_empty(), |d| {
                     d.child(
@@ -894,7 +896,7 @@ impl CalmView {
 /// One editable channel: caption, KDL child, optional property, (label, KDL value) options.
 type EditRow = (&'static str, &'static str, Option<&'static str>, &'static [(&'static str, &'static str)]);
 
-const EDIT_ROWS: [EditRow; 10] = [
+const EDIT_ROWS: [EditRow; 11] = [
     ("Days per line", "facet", Some("per-line"), &[("1", "1"), ("7", "7"), ("14", "14")]),
     ("Lines run", "facet", Some("dir"), &[("Down", "rows"), ("Across", "columns")]),
     ("Coordinates", "coord", None, &[("Cartesian", "cartesian"), ("Polar", "polar")]),
@@ -903,6 +905,7 @@ const EDIT_ROWS: [EditRow; 10] = [
     ("Overlaps", "collide", None, &[("Side by side", "split"), ("Conflicts", "highlight-conflict"), ("Overlay", "overlay")]),
     ("Mark", "mark", None, &[("Block", "block"), ("Pill", "pill"), ("List", "list"), ("Heat", "heat")]),
     ("Time zones", "zones", None, &[("All", "all"), ("Primary", "primary")]),
+    ("All-day events", "all-day", None, &[("Shown", "shown"), ("Hidden", "hidden")]),
     ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight")]),
     ("Rail style", "rail", Some("style"), &[("Width + colour", "rail"), ("Colour", "strip")]),
 ];
@@ -943,6 +946,7 @@ impl CalmView {
             }
             .into(),
             ("zones", _) => (if spec.zones == ZoneAxes::Primary { "primary" } else { "all" }).into(),
+            ("all-day", _) => (if spec.all_day { "shown" } else { "hidden" }).into(),
             ("rail", Some("show")) => lit(&spec.rail),
             ("rail", _) => lit(&spec.rail_style),
             _ => String::new(),
@@ -1348,5 +1352,21 @@ impl CalmView {
         let tight = 8.;
         let item = ((vw - 2. * margin - zoom(true) - 2. * tight - mode_w(mode) - 10.) / n).clamp(34., SWITCH_W);
         BottomLayout { item, short: true, zoom_x: vw - margin - zoom(true), params: mode, params_x: margin + picker(item) + tight }
+    }
+}
+
+impl CalmView {
+    /// "Sat 21 · All day", or "Thu 19 → Sun 22 · All day" for a multi-day event.
+    pub(super) fn all_day_span(&self, e: &crate::model::Event) -> String {
+        let day = |d: i32| format!("{} {}", DAY_NAMES[d.rem_euclid(7) as usize], self.data.date(d).day());
+        // The whole event, not just the day under the pointer.
+        let (mut first, mut last) = (e.day, e.day);
+        while self.data.on_day(first - 1).any(|k| self.data.events[k].group == e.group && self.data.events[k].all_day.is_some()) {
+            first -= 1;
+        }
+        while self.data.on_day(last + 1).any(|k| self.data.events[k].group == e.group && self.data.events[k].all_day.is_some()) {
+            last += 1;
+        }
+        if first == last { format!("{} · All day", day(first)) } else { format!("{} → {} · All day", day(first), day(last)) }
     }
 }

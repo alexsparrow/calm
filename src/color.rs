@@ -177,6 +177,10 @@ pub fn cell_stats(events: &[Event], hidden: &[bool; N], days: usize) -> Vec<Cell
     let mut cells = vec![empty; days];
     let mut core: Vec<Vec<(f32, f32)>> = vec![Vec::new(); days];
     for e in events {
+        // All day isn't time spent: it has its own stripe, not a share of the measures.
+        if e.all_day.is_some() {
+            continue;
+        }
         let Some(s) = cells.get_mut(e.day as usize) else { continue };
         let (c, h) = (e.calendar, e.dur_min / 60.);
         s.hours[c] += h;

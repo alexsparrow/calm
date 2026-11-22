@@ -18,13 +18,15 @@ use super::arrange::{Arr, Pt, Rect};
 use crate::color::{self, ColorEnc, Measure};
 use crate::layout::{Kind, LabelMode, Target, U0, U1, V0, V1};
 use crate::model::{self, Status};
-use crate::spec::{Axis, Coord, Detail, Dir};
+use crate::spec::{Axis, Coord, Detail, Dir, Mark};
 use crate::text::{self, fit, shape};
 use crate::theme::{CalColors, with_alpha};
 
 pub const MARGIN_R: f32 = 24.;
 /// Width set aside for the energy rail beside each day's time axis.
 pub const RAIL_W: f32 = 10.;
+/// Height of one row of all-day bars.
+pub const BAND_ROW: f32 = 17.;
 pub const MARGIN_T: f32 = 128.;
 /// Width of each extra time-zone column of hour labels, and height of each extra row.
 pub const ZONE_COL: f32 = 50.;
@@ -221,6 +223,35 @@ impl CalmView {
         let g = t.g;
         match t.kind {
             Kind::Cell => Shape::Rect(cell),
+            Kind::AllDay { row, prev, next } => {
+                // Joined to the neighbouring days' pieces where the event continues.
+                // Only where the next day sits alongside (lines running across) do pieces join up.
+                let across = self.views[p].facet.dir == Dir::Rows && self.views[p].facet.per_line > 1;
+                let (prev, next) = (prev && across, next && across);
+                let (x0, x1) = (if prev { cell[0] - 3. } else { cell[0] + 2. }, if next { cell[2] + 3. } else { cell[2] - 2. });
+                if inner.coord == Coord::Polar {
+                    // A thin ring just inside the dial's centre, one per stacked event.
+                    let (r_in, _) = inner.radii();
+                    let r = (r_in - 5. - row as f32 * 6.).max(3.);
+                    let (cx, cy) = inner.center();
+                    let n = 72;
+                    let ring = |rr: f32, k: usize| {
+                        let a = k as f32 / n as f32 * TAU;
+                        (cx + rr * a.cos(), cy + rr * a.sin())
+                    };
+                    let mut pts: Vec<Pt> = (0..=n).map(|k| ring(r + 2., k)).collect();
+                    pts.extend((0..=n).rev().map(|k| ring(r - 2., k)));
+                    Shape::Strip(pts)
+                } else if self.lenses[p].mark == Mark::Heat {
+                    // A stripe along the top of the aggregate cell.
+                    let y = cell[1] + 2. + row as f32 * 4.;
+                    Shape::Rect([x0, y, x1, y + 3.])
+                } else {
+                    // A bar in the band above the time axis.
+                    let top = inner.cell[1] - self.band_rows(p, t.day) as f32 * BAND_ROW - 3. + row as f32 * BAND_ROW;
+                    Shape::Rect([x0, top, x1, top + BAND_ROW - 2.])
+                }
+            }
             Kind::Row { rank } => {
                 let y0 = cell[1] + ROW_TOP + rank as f32 * ROW_H;
                 Shape::Rect([cell[0] + 3., y0, cell[2] - 3., y0 + ROW_H - 2.])
@@ -363,11 +394,18 @@ impl CalmView {
             let selected = self.selected.is_some_and(|s| self.data.events[s].group == e.group);
             let tentative = e.status == Status::Tentative;
             let mut fill = c.fill.blend(with_alpha(c.edge, 0.18 * hover));
+            // Stripes over aggregate cells need the strong colour to show at all.
+            if matches!(m.target.kind, Kind::AllDay { .. }) && self.lenses[p].mark == Mark::Heat {
+                fill = c.dot.blend(with_alpha(th.ink, 0.15 * hover));
+            }
             fill.a = alpha * if tentative { 0.75 } else { 1. };
             let (w, h) = (b[2] - b[0], b[3] - b[1]);
             match &shape {
                 Shape::Rect(r) => {
                     let radius = match m.target.kind {
+                        // Square where a multi-day bar carries on, so the pieces read as one.
+                        Kind::AllDay { .. } if self.lenses[p].mark == Mark::Heat => 1.5,
+                        Kind::AllDay { prev, next, .. } => if (prev || next) && self.views[p].facet.dir == Dir::Rows && self.views[p].facet.per_line > 1 { 0. } else { 4f32.min(h * 0.5) },
                         Kind::Pill { .. } => (h * 0.5).min(w * 0.5),
                         Kind::Row { .. } => 4f32.min(h * 0.5),
                         _ => 6f32.min(w * 0.5).min(h * 0.5),
@@ -545,21 +583,36 @@ impl CalmView {
                     if h < 9. || w < 34. {
                         continue;
                     }
+                    // A multi-day bar is titled once per line: where it starts, or where a line begins.
+                    let per_line = self.views[p].facet.per_line.max(1);
+                    let piece = e.all_day.filter(|_| matches!(m.target.kind, Kind::AllDay { .. }));
+                    if piece.is_some_and(|a| a.prev && e.day.rem_euclid(per_line) != 0) {
+                        continue;
+                    }
                     placed.push(i);
                     if base < 0.02 {
                         continue;
                     }
-                    let clip = Some([b[0], b[1], b[2] - 2., b[3]]);
+                    // The title may run on across the bar's later days in this line.
+                    let mut right = b[2];
+                    if piece.is_some() {
+                        let mut d = e.day;
+                        while (d + 1).rem_euclid(per_line) != 0 && self.data.on_day(d + 1).any(|k| self.data.events[k].group == e.group && self.data.events[k].all_day.is_some()) {
+                            d += 1;
+                        }
+                        right = arr.cell_inset(d)[2] - 2.;
+                    }
+                    let clip = Some([b[0], b[1], right - 2., b[3]]);
                     let time: SharedString = compact_time(e.start_min).into();
                     let tw = text::width(window, &time, &fonts.regular, 10.5);
                     let (x0, y) = (b[0] + 7., b[1] + (h - 13.5) * 0.5);
-                    let show_time = w > 90.;
+                    let show_time = w > 90. && e.all_day.is_none();
                     if show_time {
                         let line = shape(window, time, &fonts.regular, 10.5, with_alpha(c.text, base * 0.65));
                         frame.push(LABELS, Cmd::Line { line, at: (x0, y), size: 10.5, clip });
                     }
                     let tx = if show_time { x0 + tw + 5. } else { x0 };
-                    if let Some((title, _)) = fit(window, &e.title, &fonts.medium, 10.5, b[2] - tx - 4.) {
+                    if let Some((title, _)) = fit(window, &e.title, &fonts.medium, 10.5, right - tx - 4.) {
                         let line = shape(window, title, &fonts.medium, 10.5, with_alpha(c.text, base));
                         frame.push(LABELS, Cmd::Line { line, at: (tx, y), size: 10.5, clip });
                         n += 1;
@@ -982,12 +1035,6 @@ impl CalmView {
                         let dow = d.rem_euclid(7) as usize;
                         if single > 0.01 {
                             label(f, TOP, DAY_NAMES[dow].to_uppercase(), &fonts.medium, 10.5, with_alpha(if is_today { th.now } else { th.faint }, single), (xc, py0 - 56.), 0.5);
-                            // All-day events have no place on the time grid yet; at least say they exist.
-                            let all_day = self.data.all_day.get(d as usize).copied().unwrap_or(0);
-                            if all_day > 0 && c[2] - c[0] > 70. {
-                                let text = if c[2] - c[0] > 110. { format!("{all_day} all-day") } else { format!("+{all_day}") };
-                                label(f, TOP, text, &fonts.medium, 10., with_alpha(th.muted, single * 0.9), (c[2] - 6., py0 - 18.), 1.);
-                            }
                             let num = date.day().to_string();
                             if is_today {
                                 let r = 15.;
