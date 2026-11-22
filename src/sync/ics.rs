@@ -507,3 +507,27 @@ END:VCALENDAR\r\n";
         assert_eq!(feed.components[0].start.instant(), Utc.with_ymd_and_hms(2026, 7, 1, 16, 0, 0).unwrap());
     }
 }
+
+/// Recurrence lines as Google gives them (`RRULE:…`, `EXDATE;TZID=Europe/London:…`,
+/// `RDATE;VALUE=DATE:…`), parsed with the same rules as a feed: the rule, then
+/// excluded and added starts.
+pub fn recurrence_lines(lines: &[String]) -> (Option<String>, Vec<Moment>, Vec<Moment>) {
+    let zones = Zones { fixed: HashMap::new() };
+    let (mut rrule, mut ex, mut add) = (None, Vec::new(), Vec::new());
+    for line in lines {
+        let Some((head, value)) = line.split_once(':') else { continue };
+        let mut parts = head.split(';');
+        let name = parts.next().unwrap_or("").trim().to_ascii_uppercase();
+        let params: Vec<(String, &str)> = parts.filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_ascii_uppercase(), v.trim())).collect();
+        let get = |k: &str| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| *v);
+        let date_only = get("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE"));
+        let moments = || value.split(',').filter_map(|v| parse_moment(v, get("TZID"), date_only, &zones)).collect::<Vec<_>>();
+        match name.as_str() {
+            "RRULE" => rrule = Some(value.trim().to_string()),
+            "EXDATE" => ex.extend(moments()),
+            "RDATE" => add.extend(moments()),
+            _ => {}
+        }
+    }
+    (rrule, ex, add)
+}

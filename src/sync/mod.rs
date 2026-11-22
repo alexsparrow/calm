@@ -3,6 +3,7 @@
 //! `docs/storage-sync.md` for the design.
 
 mod config;
+pub mod google;
 pub mod ics;
 pub mod store;
 
@@ -64,6 +65,7 @@ struct Fetched {
 /// Fetches a source, conditionally where the server allows. Error messages never contain the URL.
 fn fetch(source: &Source, state: &SourceState) -> Result<Fetched, String> {
     match &source.location {
+        Location::Google(_) => Err("Google accounts sync through the API".into()),
         Location::File(p) => std::fs::read_to_string(p)
             .map(|body| Fetched { status: None, body: Some(body), etag: None, last_modified: None })
             .map_err(|e| format!("can't read file: {}", e.kind())),
@@ -120,7 +122,12 @@ pub fn sync_source(store: &mut Store, source: &Source, now: DateTime<Utc>) -> Ou
     state.last_attempt_at = Some(started);
     let refresh = source.refresh.as_secs() as i64;
 
-    let (outcome, status, bytes, events) = (|| {
+    let (outcome, status, bytes, events) = if let Location::Google(account) = &source.location {
+        let outcome = google::sync_account(store, &source.name, account, now);
+        let events = if let Outcome::Ok { events, .. } = &outcome { Some(*events) } else { None };
+        (outcome, None, None, events)
+    } else {
+        (|| {
         let fetched = match fetch(source, &state) {
             Ok(f) => f,
             Err(e) => return (Outcome::Error(e), None, None, None),
@@ -157,9 +164,19 @@ pub fn sync_source(store: &mut Store, source: &Source, now: DateTime<Utc>) -> Ou
             return (Outcome::Error(format!("cache write failed: {e}")), fetched.status, bytes, Some(count));
         }
         (Outcome::Ok { events: count, skipped: feed.skipped }, fetched.status, bytes, Some(count))
-    })();
+    })()
+    };
 
+    let google = matches!(source.location, Location::Google(_));
     match &outcome {
+        // A Google account keeps its own per-calendar state; this is the account's.
+        Outcome::Ok { events, .. } if google => {
+            state.last_ok_at = Some(started);
+            state.last_error = None;
+            state.failures = 0;
+            state.event_count = *events as i64;
+            state.next_attempt_at = Some(started + refresh);
+        }
         Outcome::Ok { .. } => {}
         Outcome::Unchanged => {
             state.last_ok_at = Some(started);
@@ -177,7 +194,7 @@ pub fn sync_source(store: &mut Store, source: &Source, now: DateTime<Utc>) -> Ou
             state.next_attempt_at = Some(started + backoff(state.failures, &source.name));
         }
     }
-    if !matches!(outcome, Outcome::Ok { .. }) {
+    if google || !matches!(outcome, Outcome::Ok { .. }) {
         let _ = store.save_state(&state);
     }
     let message = match &outcome {

@@ -25,6 +25,7 @@ struct Raw {
     url: Option<String>,
     url_file: Option<String>,
     path: Option<String>,
+    google: Option<String>,
     calendar: Option<String>,
     refresh: Option<String>,
 }
@@ -33,6 +34,8 @@ struct Raw {
 pub enum Location {
     Url(String),
     File(PathBuf),
+    /// A Google account, by its address.
+    Google(String),
 }
 
 #[derive(Clone)]
@@ -89,6 +92,7 @@ fn raws(declared: Option<&[crate::viewconf::SourceDecl]>, problems: &mut Vec<Str
                 url: d.url.clone(),
                 url_file: d.url_file.clone(),
                 path: d.path.clone(),
+                google: d.google.clone(),
                 calendar: d.calendar.clone(),
                 refresh: d.refresh.clone(),
             })
@@ -107,9 +111,20 @@ fn raws(declared: Option<&[crate::viewconf::SourceDecl]>, problems: &mut Vec<Str
     }
 }
 
-/// The calendar each source asks for: its `calendar=`, else its own name.
-pub fn wanted_calendars(declared: Option<&[crate::viewconf::SourceDecl]>) -> Vec<String> {
-    raws(declared, &mut Vec::new()).into_iter().map(|r| r.calendar.unwrap_or(r.name)).collect()
+/// The calendars sources bring, with a colour where the service gives one: an iCal
+/// source's `calendar=` (else its own name); a Google account's calendars as last synced.
+pub fn wanted_calendars(declared: Option<&[crate::viewconf::SourceDecl]>) -> Vec<(String, Option<String>)> {
+    let store = super::store::Store::open(&super::db_path()).ok();
+    let mut out = Vec::new();
+    for r in raws(declared, &mut Vec::new()) {
+        if r.google.is_some() {
+            let cals = store.as_ref().and_then(|s| s.calendars(&r.name).ok()).unwrap_or_default();
+            out.extend(cals.into_iter().map(|c| (c.name, c.color)));
+        } else {
+            out.push((r.calendar.unwrap_or(r.name), None));
+        }
+    }
+    out
 }
 
 /// Configured sources, plus human-readable problems (never containing secrets).
@@ -119,9 +134,10 @@ pub fn load(declared: Option<&[crate::viewconf::SourceDecl]>, calendars: &[Strin
     let raws = raws(declared, &mut problems);
     let mut out = Vec::new();
     for raw in raws {
-        let location = match (&raw.url, &raw.url_file, &raw.path) {
-            (Some(u), None, None) => Location::Url(u.clone()),
-            (None, Some(f), None) => {
+        let location = match (&raw.url, &raw.url_file, &raw.path, &raw.google) {
+            (None, None, None, Some(account)) => Location::Google(account.clone()),
+            (Some(u), None, None, None) => Location::Url(u.clone()),
+            (None, Some(f), None, None) => {
                 let file = expand_tilde(f);
                 #[cfg(unix)]
                 {
@@ -140,9 +156,9 @@ pub fn load(declared: Option<&[crate::viewconf::SourceDecl]>, calendars: &[Strin
                     }
                 }
             }
-            (None, None, Some(p)) => Location::File(expand_tilde(p)),
+            (None, None, Some(p), None) => Location::File(expand_tilde(p)),
             _ => {
-                problems.push(format!("{}: give exactly one of url, url_file or path", raw.name));
+                problems.push(format!("{}: give exactly one of url, url_file, path or google", raw.name));
                 continue;
             }
         };
@@ -155,15 +171,20 @@ pub fn load(declared: Option<&[crate::viewconf::SourceDecl]>, calendars: &[Strin
         let want = raw.calendar.as_deref().unwrap_or(&raw.name);
         let calendar = match calendars.iter().position(|n| n.eq_ignore_ascii_case(want)) {
             Some(c) => c,
+            // A Google account's events map to calendars per Google calendar instead.
+            None if matches!(location, Location::Google(_)) => 0,
             None => {
                 problems.push(format!("{}: no calendar named `{want}`; using `{}`", raw.name, calendars.first().map_or("", String::as_str)));
                 0
             }
         };
-        let refresh = raw.refresh.as_deref().and_then(parse_refresh).unwrap_or(Duration::from_secs(15 * 60));
+        // Google syncs incrementally, so it can afford to look more often.
+        let default = if matches!(location, Location::Google(_)) { 5 * 60 } else { 15 * 60 };
+        let refresh = raw.refresh.as_deref().and_then(parse_refresh).unwrap_or(Duration::from_secs(default));
         let key = match &location {
             Location::Url(u) => format!("url:{:016x}", super::hash(u)),
             Location::File(p) => format!("path:{}", p.display()),
+            Location::Google(a) => format!("google:{a}"),
         };
         out.push(Source { config_hash: format!("{key}|{calendar}"), name: raw.name, location, calendar, refresh });
     }

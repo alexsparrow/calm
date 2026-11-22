@@ -28,6 +28,22 @@ fn main() {
     if args.first().map(String::as_str) == Some("config") {
         std::process::exit(viewconf::cli(&args[1..]));
     }
+    // `calm google login ADDRESS`: sign in to Google Calendar in the browser.
+    if args.first().map(String::as_str) == Some("google") {
+        std::process::exit(match (args.get(1).map(String::as_str), args.get(2)) {
+            (Some("login"), Some(account)) => match sync::google::login(account) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("calm: {e}");
+                    1
+                }
+            },
+            _ => {
+                eprintln!("usage: calm google login you@gmail.com   (setup: docs/google.md)");
+                2
+            }
+        });
+    }
     let mut opts = view::Options::from_args();
     // calm.kdl's `window` sets translucency unless the command line already did.
     let (config, _) = viewconf::load();

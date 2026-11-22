@@ -154,6 +154,8 @@ pub struct SourceDecl {
     pub url: Option<String>,
     pub url_file: Option<String>,
     pub path: Option<String>,
+    /// A Google account, synced through the API (see `sync::google`).
+    pub google: Option<String>,
     pub calendar: Option<String>,
     pub refresh: Option<String>,
 }
@@ -549,18 +551,25 @@ impl Loader {
 
     /// `source "Personal" url-file="…" calendar="Personal" refresh="15m"`
     fn source_node(&mut self, at: &At, node: &KdlNode) {
-        self.check_props(at, node, &["url", "url-file", "path", "calendar", "refresh"]);
+        self.check_props(at, node, &["url", "url-file", "path", "google", "calendar", "refresh"]);
         let off = node.span().offset();
         let Some(name) = self.arg_str(at, node, 0, "a name") else { return };
         let (url, url_file, path) = (self.str_prop(at, node, "url"), self.str_prop(at, node, "url-file"), self.str_prop(at, node, "path"));
-        if [&url, &url_file, &path].iter().filter(|x| x.is_some()).count() != 1 {
-            self.err(at, off, format!("source `{name}` needs exactly one of url=, url-file= or path= (keep secret addresses in a url-file)"));
+        let google = self.str_prop(at, node, "google");
+        if [&url, &url_file, &path, &google].iter().filter(|x| x.is_some()).count() != 1 {
+            self.err(at, off, format!("source `{name}` needs exactly one of url=, url-file=, path= or google= (keep secret addresses in a url-file)"));
             return;
         }
         let calendar = self.str_prop(at, node, "calendar");
+        if google.is_some() && calendar.is_some() {
+            self.err(at, off, format!("source `{name}`: a Google account brings its own calendars, so `calendar=` doesn't apply"));
+            return;
+        }
         // Checked against declared calendars once everything has loaded (see `check_refs`).
         let (line, col) = at.pos(off);
-        self.cal_refs.push((at.file.to_string(), line, col, calendar.clone().unwrap_or_else(|| name.clone()), calendar.is_some()));
+        if google.is_none() {
+            self.cal_refs.push((at.file.to_string(), line, col, calendar.clone().unwrap_or_else(|| name.clone()), calendar.is_some()));
+        }
         let refresh = self.str_prop(at, node, "refresh");
         if let Some(r) = &refresh
             && crate::sync::parse_refresh(r).is_none()
@@ -579,7 +588,7 @@ impl Loader {
             shown.push(("url", "<hidden>"));
         }
         self.settings.text.push(shown.to_string());
-        self.sources.push(SourceDecl { name, url, url_file, path, calendar, refresh });
+        self.sources.push(SourceDecl { name, url, url_file, path, google, calendar, refresh });
     }
 
     fn finish(self) -> Config {

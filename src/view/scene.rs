@@ -252,7 +252,7 @@ impl CalmView {
                 if g[U0] > 0.001 {
                     r[0] += 1.;
                 }
-                Shape::Rect(r)
+                Shape::Rect(clip_to(r, inner.cell))
             }
             Kind::Pill { row, rows } if inner.coord == Coord::Polar => {
                 // A short arc at the pill's radius, as thick as its straight version would be.
@@ -298,7 +298,9 @@ impl CalmView {
                     let stack = rows * h + (rows - 1.) * gap;
                     ((vy0 + vy1) * 0.5 - stack * 0.5 + row as f32 * (h + gap), h)
                 };
-                Shape::Rect([x0, top, x1.max(x0 + 2.), top + h])
+                // Clipped to the cell: outside the hour window, nothing is left to draw.
+                let (cx0, cx1) = (x0.max(inner.cell[0]), x1.max(x0 + 2.).min(inner.cell[2]));
+                Shape::Rect([cx0, top, cx1.max(cx0), top + h])
             }
         }
     }
@@ -351,7 +353,8 @@ impl CalmView {
                 }
             }
             let b = shape.bbox();
-            if !arr.on_screen(&b) {
+            // Clipped away (wholly outside the hour window), or off screen.
+            if !arr.on_screen(&b) || b[2] - b[0] < 0.5 || b[3] - b[1] < 0.5 {
                 continue;
             }
             let e = &self.data.events[i];
@@ -1325,4 +1328,10 @@ fn paint_cmds(cmds: Vec<Cmd>, window: &mut Window, cx: &mut App) {
 pub fn skip(part: &str) -> bool {
     thread_local!(static SKIP: String = std::env::var("CALM_SKIP").unwrap_or_default());
     SKIP.with(|s| s.split(',').any(|p| p == part))
+}
+
+/// `r` limited to `cell`; empty (zero-sized) when they don't overlap.
+fn clip_to(r: Rect, cell: Rect) -> Rect {
+    let (x0, y0) = (r[0].max(cell[0]), r[1].max(cell[1]));
+    [x0, y0, r[2].min(cell[2]).max(x0), r[3].min(cell[3]).max(y0)]
 }

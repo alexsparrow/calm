@@ -57,22 +57,16 @@ pub fn parse_color(s: &str) -> Option<(f32, f32)> {
     Some((hsl.h * 360., hsl.s.clamp(0.06, 0.55)))
 }
 
-/// The calendar list: as declared, else one per distinct name the sources ask for
-/// (`calendar=`, or the source's own name). Unset colours take the palette in order, and
-/// names the demo used keep its colours and demand.
-pub fn resolve_calendars(declared: Option<&[crate::viewconf::CalendarDecl]>, wanted: &[String]) -> Vec<Calendar> {
-    let decls: Vec<crate::viewconf::CalendarDecl> = match declared {
-        Some(d) => d.to_vec(),
-        None => {
-            let mut names: Vec<String> = Vec::new();
-            for n in wanted {
-                if !names.iter().any(|x| x.eq_ignore_ascii_case(n)) {
-                    names.push(n.clone());
-                }
-            }
-            names.into_iter().map(|n| (n, None, None)).collect()
+/// The calendar list: the declared ones first, then any other calendar the sources bring
+/// (an iCal source's `calendar=` or name; a Google account's calendars, with their colours).
+/// Unset colours take the palette in order, and names the demo used keep its colours and demand.
+pub fn resolve_calendars(declared: Option<&[crate::viewconf::CalendarDecl]>, wanted: &[(String, Option<String>)]) -> Vec<Calendar> {
+    let mut decls: Vec<crate::viewconf::CalendarDecl> = declared.map(<[_]>::to_vec).unwrap_or_default();
+    for (name, color) in wanted {
+        if !decls.iter().any(|d| d.0.eq_ignore_ascii_case(name)) {
+            decls.push((name.clone(), color.clone(), None));
         }
-    };
+    }
     let mut out: Vec<Calendar> = Vec::new();
     for (name, color, demand) in decls.into_iter().take(MAX_CALENDARS) {
         let demo = DEMO.iter().find(|d| d.0.eq_ignore_ascii_case(&name));
@@ -341,8 +335,9 @@ impl Dataset {
         }
         for i in 0..self.events.len() {
             let e = &self.events[i];
-            let s = e.energy - self.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
-            self.events[i].strain = s;
+            let yours = self.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
+            // While you'd be asleep there is no energy to measure against: not strain.
+            self.events[i].strain = if yours > 0.01 { e.energy - yours } else { 0. };
         }
     }
 

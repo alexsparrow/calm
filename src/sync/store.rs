@@ -71,6 +71,18 @@ CREATE TABLE derived (
     value TEXT,
     PRIMARY KEY (source, uid, start, key)
 );
+"#, r#"
+-- Google: a sync token per calendar, and each account's calendar list.
+ALTER TABLE sources ADD COLUMN sync_token TEXT;
+CREATE TABLE remote_calendars (
+    source TEXT NOT NULL,
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT,
+    access TEXT,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (source, id)
+);
 "#];
 
 /// Per-source sync bookkeeping.
@@ -89,6 +101,19 @@ pub struct SourceState {
     pub event_count: i64,
     pub failures: i64,
     pub next_attempt_at: Option<i64>,
+    /// Google: where the next incremental sync picks up.
+    pub sync_token: Option<String>,
+}
+
+/// A calendar an account offers (Google's calendar list).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteCalendar {
+    pub id: String,
+    pub name: String,
+    /// `#rrggbb`.
+    pub color: Option<String>,
+    /// `owner`, `writer`, `reader` or `freeBusyReader`.
+    pub access: String,
 }
 
 #[derive(Clone, Debug)]
@@ -159,7 +184,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT config_hash, etag, last_modified, content_hash, suspect_hash, last_ok_at, last_attempt_at,
-                        last_error, event_count, failures, next_attempt_at FROM sources WHERE name = ?1",
+                        last_error, event_count, failures, next_attempt_at, sync_token FROM sources WHERE name = ?1",
                 [name],
                 |r| {
                     Ok(SourceState {
@@ -175,6 +200,7 @@ impl Store {
                         event_count: r.get(8)?,
                         failures: r.get(9)?,
                         next_attempt_at: r.get(10)?,
+                        sync_token: r.get(11)?,
                     })
                 },
             )
@@ -195,8 +221,8 @@ impl Store {
     fn write_state(conn: &Connection, s: &SourceState) -> rusqlite::Result<()> {
         conn.execute(
             "INSERT OR REPLACE INTO sources (name, config_hash, etag, last_modified, content_hash, suspect_hash,
-                 last_ok_at, last_attempt_at, last_error, event_count, failures, next_attempt_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 last_ok_at, last_attempt_at, last_error, event_count, failures, next_attempt_at, sync_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 s.name,
                 s.config_hash,
@@ -209,7 +235,8 @@ impl Store {
                 s.last_error,
                 s.event_count,
                 s.failures,
-                s.next_attempt_at
+                s.next_attempt_at,
+                s.sync_token
             ],
         )?;
         Ok(())
@@ -292,14 +319,51 @@ impl Store {
             .query_map([], |r| r.get(0))?
             .collect::<Result<Vec<String>, _>>()?
             .into_iter()
-            .filter(|n| !names.contains(n))
+            // `Account/calendar-id` keys belong to their account's source.
+            .filter(|n| !names.iter().any(|k| n == k || n.starts_with(&format!("{k}/"))))
             .collect();
         for n in stale {
+            for table in ["sources WHERE name", "components WHERE source", "occurrences WHERE source", "derived WHERE source", "remote_calendars WHERE source"] {
+                tx.execute(&format!("DELETE FROM {table} = ?1"), [&n])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// Replaces an account's calendar list, and drops data for calendars no longer on it.
+    pub fn set_calendars(&mut self, source: &str, calendars: &[RemoteCalendar]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM remote_calendars WHERE source = ?1", [source])?;
+        for (i, c) in calendars.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO remote_calendars (source, id, name, color, access, position) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![source, c.id, c.name, c.color, c.access, i as i64],
+            )?;
+        }
+        let keep: Vec<String> = calendars.iter().map(|c| format!("{source}/{}", c.id)).collect();
+        let subs: Vec<String> = tx
+            .prepare("SELECT name FROM sources WHERE substr(name, 1, length(?1)) = ?1")?
+            .query_map([format!("{source}/")], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        for n in subs.into_iter().filter(|n| !keep.contains(n)) {
             for table in ["sources WHERE name", "components WHERE source", "occurrences WHERE source", "derived WHERE source"] {
                 tx.execute(&format!("DELETE FROM {table} = ?1"), [&n])?;
             }
         }
         tx.commit()
+    }
+
+    /// An account's calendars, in its order.
+    pub fn calendars(&self, source: &str) -> rusqlite::Result<Vec<RemoteCalendar>> {
+        self.conn
+            .prepare("SELECT id, name, color, access FROM remote_calendars WHERE source = ?1 ORDER BY position")?
+            .query_map([source], |r| Ok(RemoteCalendar { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, access: r.get::<_, Option<String>>(3)?.unwrap_or_default() }))?
+            .collect()
+    }
+
+    /// The raw text of each stored component of a source (Google keeps each event's JSON).
+    pub fn raw_components(&self, source: &str) -> rusqlite::Result<Vec<String>> {
+        self.conn.prepare("SELECT raw FROM components WHERE source = ?1")?.query_map([source], |r| r.get(0))?.collect()
     }
 
     /// Occurrences overlapping `[from, to]`, every source.

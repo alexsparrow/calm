@@ -1373,10 +1373,21 @@ struct Sync {
 /// Reads every configured source's occurrences from the offline cache.
 fn load_live(sources: &[crate::sync::Source], calendars: &[Calendar]) -> Dataset {
     let span = model::generate_span();
-    let stored = crate::sync::store::Store::open(&crate::sync::db_path())
-        .and_then(|s| s.occurrences(span.0, span.1))
-        .unwrap_or_default();
-    model::from_occurrences(&stored, |name| sources.iter().find(|s| s.name == name).map_or(0, |s| s.calendar), calendars)
+    let store = crate::sync::store::Store::open(&crate::sync::db_path()).ok();
+    let stored = store.as_ref().and_then(|s| s.occurrences(span.0, span.1).ok()).unwrap_or_default();
+    // Which calendar each stored key belongs to: an iCal source's own, or for a Google
+    // account (`Account/calendar-id`) the calendar named like that Google calendar.
+    let index = |name: &str| calendars.iter().position(|c| c.name.eq_ignore_ascii_case(name));
+    let mut keys: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in sources {
+        keys.insert(s.name.clone(), s.calendar);
+        if matches!(s.location, crate::sync::Location::Google(_)) {
+            for c in store.as_ref().and_then(|st| st.calendars(&s.name).ok()).unwrap_or_default() {
+                keys.insert(format!("{}/{}", s.name, c.id), index(&c.name).unwrap_or(0));
+            }
+        }
+    }
+    model::from_occurrences(&stored, |key| keys.get(key).copied().unwrap_or(0), calendars)
 }
 
 impl CalmView {
@@ -1394,6 +1405,14 @@ impl CalmView {
         }
         sync.states = crate::sync::store::Store::open(&crate::sync::db_path()).and_then(|s| s.states()).unwrap_or_default();
         if changed {
+            // A Google account may have brought new calendars: give them chips first.
+            let calendars = calendars_for(&self.conf.settings, false);
+            if calendars != self.calendars {
+                self.hidden = std::array::from_fn(|c| c >= calendars.len());
+                self.theme = self.theme.with_calendars(&calendars);
+                self.calendars = calendars;
+            }
+            let Some(sync) = &self.sync else { return };
             let data = load_live(&sync.sources, &self.calendars);
             self.set_data(data);
         }

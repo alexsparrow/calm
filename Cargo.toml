@@ -11,8 +11,12 @@ icalendar = { version = "0.17", features = ["chrono-tz"] }
 kdl = { version = "6", features = ["v1-fallback"] }
 libc = "0.2"
 rrule = "0.14"
+base64 = "0.22"
+getrandom = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 toml = "0.9"
 ureq = "3"
 

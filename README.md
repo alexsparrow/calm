@@ -64,6 +64,10 @@ Reference: [docs/config.md](docs/config.md).
 
 ### Calendars
 
+For Google, sign in once and calm reads every calendar in your account, free/busy-only shares
+included, and keeps them in sync incrementally: `calm google login you@gmail.com`, then
+`source "Google" google="you@gmail.com"`. Setup (your own OAuth client): [docs/google.md](docs/google.md).
+
 Each `source` in calm.kdl is a calendar feed: `url-file=` (a file holding the secret iCal address,
 chmod 600), `url=`, or `path=` for a local `.ics`; `refresh=` how often to fetch. `calendar=` says which
 calendar its events belong to. Calendars are the chips in the top bar; declare them to set their
