@@ -101,6 +101,15 @@ pub struct Stop {
     pub align: Align,
 }
 
+/// Time-zone labelling of the time axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ZoneAxes {
+    /// Every configured zone gets its own row or column of hour labels.
+    All,
+    /// Only the primary zone, e.g. where extra label rings would be clutter.
+    Primary,
+}
+
 /// Secondary encoding nested inside an aggregate cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Detail {
@@ -124,6 +133,9 @@ pub struct Spec {
     /// Default colour encoding; the view keeps per-lens overrides.
     pub color: ColorEnc,
     pub detail: Detail,
+    /// Which time zones label the time-of-day axis. The zones themselves are a
+    /// global setting; a view can only narrow them to the primary one.
+    pub zones: ZoneAxes,
 }
 
 const DAY: Stop = Stop { name: "Day", cells: 1, align: Align::Cell };
@@ -150,6 +162,7 @@ pub const PRESETS: [Spec; 5] = [
         stops: &[DAY, WEEK, MONTH, QUARTER, YEAR],
         color: BLEND,
         detail: Detail::None,
+        zones: ZoneAxes::All,
     },
     Spec {
         name: "Lanes",
@@ -164,6 +177,7 @@ pub const PRESETS: [Spec; 5] = [
         stops: &[DAY, WEEK_ROWS, Stop { name: "Month", cells: 28, align: Align::Group }],
         color: BLEND,
         detail: Detail::None,
+        zones: ZoneAxes::All,
     },
     Spec {
         name: "Energy",
@@ -178,6 +192,7 @@ pub const PRESETS: [Spec; 5] = [
         stops: &[DAY, WEEK_ROWS],
         color: BLEND,
         detail: Detail::None,
+        zones: ZoneAxes::All,
     },
     Spec {
         name: "Dial",
@@ -192,6 +207,7 @@ pub const PRESETS: [Spec; 5] = [
         stops: &[DAY, WEEK, MONTH],
         color: BLEND,
         detail: Detail::None,
+        zones: ZoneAxes::Primary,
     },
     Spec {
         name: "Quarter",
@@ -210,6 +226,7 @@ pub const PRESETS: [Spec; 5] = [
         ],
         color: ColorEnc { measure: Measure::Hours, by_calendar: false, compose: Compose::Stripes },
         detail: Detail::None,
+        zones: ZoneAxes::Primary,
     },
 ];
 

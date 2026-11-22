@@ -27,7 +27,27 @@ cargo run --release
 | `D` | Toggle light / dark (follows the system by default) |
 | `C` / `B` / `V` | Cycle colour measure · toggle split by calendar · cycle composition |
 | `G` | Day-span glyph in Quarter cells |
+| `Z` | Show / hide extra time zones |
 | `?` | Help · `` ` `` frame stats |
+
+### Time zones
+
+Extra zones are a global setting: put `zones = America/New_York, Europe/London` in
+`~/.config/calm/config`, or pass `--zones`. The primary zone is the system's. Week gets a column of
+hour labels per zone, and Lanes and Energy get a row per zone; a trailing `+` or `−` means the next or
+previous day. Each view's grammar can narrow labelling to the primary zone (`zones: primary`, used
+by Dial). The details drawer shows an event's time in every zone.
+
+Zones can be given a short label for the axes and a long name, shown with the current time and UTC
+offset when you hover a zone label:
+
+```
+zones = Asia/Manila, Europe/London
+short.Asia/Manila = 🇵🇭
+long.Asia/Manila = Manila
+```
+
+Whichever configured zone you are currently in is dropped, so the same config works wherever you are.
 
 Click an event to see its details. Click an overview cell (a month or year box) to zoom into it. The calendar
 chips in the top bar show and hide calendars, and the remaining lanes widen to fill.
@@ -36,7 +56,7 @@ chips in the top bar show and hide calendars, and the remaining lanes widen to f
 
 | Flag | |
 |---|---|
-| `--lens N`, `--zoom STOP`, `--theme dark\|light`, `--offset DAYS` | Start state |
+| `--lens N`, `--zoom STOP`, `--theme dark\|light`, `--offset DAYS`, `--zones A,B` | Start state |
 | `--translucent`, `--opacity X`, `--blur` | Translucent window: 0.8 background opacity by default, optional compositor blur |
 | `--still` | Springs settle in one frame (for screenshots) |
 | `--hover x,y`, `--select x,y` | Scripted pointer, applied once the window size settles |

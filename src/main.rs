@@ -5,6 +5,7 @@ mod model;
 mod spec;
 mod text;
 mod theme;
+mod zones;
 mod view;
 
 use std::borrow::Cow;

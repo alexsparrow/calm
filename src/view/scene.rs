@@ -22,18 +22,14 @@ use crate::spec::{Axis, Coord, Detail, Dir, PRESETS};
 use crate::text::{self, fit, shape};
 use crate::theme::{CalColors, with_alpha};
 
-pub const MARGIN_L: f32 = 104.;
 pub const MARGIN_R: f32 = 64.;
 pub const MARGIN_T: f32 = 128.;
-pub const MARGIN_B: f32 = 150.;
+/// Width of each extra time-zone column of hour labels, and height of each extra row.
+pub const ZONE_COL: f32 = 50.;
+pub const ZONE_ROW: f32 = 16.;
 pub const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const ROW_TOP: f32 = 22.;
 const ROW_H: f32 = 17.;
-
-pub fn plot(viewport: (f32, f32)) -> (f32, f32, f32, f32) {
-    let (vw, vh) = viewport;
-    (MARGIN_L, MARGIN_T, (vw - MARGIN_L - MARGIN_R).max(200.), (vh - MARGIN_T - MARGIN_B).max(200.))
-}
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0., 1.);
@@ -170,6 +166,7 @@ const FRONT: usize = 2;
 const LABELS: usize = 3;
 const TOP: usize = 4;
 const LEFT: usize = 5;
+const FREE: usize = 6;
 
 impl Frame {
     fn new(plot: [f32; 4]) -> Self {
@@ -182,7 +179,7 @@ impl Frame {
                 g(Some(clip), true),
                 g(Some(clip), false),
                 g(Some(clip), true),
-                g(Some([x - 2., y - 72., x + w + 2., y]), false),
+                g(Some([x - 2., y - 140., x + w + 2., y]), false),
                 g(Some([0., y - 12., x - 4., y + h]), false),
                 g(None, false),
             ],
@@ -283,6 +280,7 @@ impl CalmView {
         let p = self.preset;
         let arr = self.arr();
         let mut frame = Frame::new(arr.plot);
+        self.zone_hits.borrow_mut().clear();
         let mut hits = Vec::new();
 
         for li in 0..PRESETS.len() {
@@ -630,6 +628,17 @@ impl CalmView {
             let x = at.0 - f32::from(line.width) * align;
             f.push(group, Cmd::Line { line, at: (x, at.1), size, clip: None });
         };
+        // Zone names: a little larger than axis text (flags read better), right-aligned at
+        // `at`, and hoverable for the zone's long name and current time.
+        let zone_label = |f: &mut Frame, s: String, font: &gpui::Font, color: Hsla, (x, y): Pt, tz: Option<chrono_tz::Tz>, a: f32| {
+            let size = 12.5;
+            let line = shape(window, s.into(), font, size, color);
+            let x0 = x - f32::from(line.width);
+            if li == self.preset && a > 0.5 {
+                self.zone_hits.borrow_mut().push(([x0 - 4., y - 2., x + 4., y + size * 1.3 + 2.], tz));
+            }
+            f.push(FREE, Cmd::Line { line, at: (x0, y), size, clip: None });
+        };
         let hair = |f: &mut Frame, group, b: Rect, alpha: f32| {
             f.push(group, Cmd::Quad { b, r: 0., color: with_alpha(th.hairline, alpha), border: None });
         };
@@ -638,6 +647,9 @@ impl CalmView {
         let at_left = |c: &Rect| c[0] <= px0 + 2. && c[2] > px0 + 2.;
         let time_y = spec.y == Axis::TimeOfDay;
         let time_x = spec.x == Axis::TimeOfDay;
+        // Extra zones labelling this lens's time axis, unless its grammar narrows to primary.
+        let zones: Vec<chrono_tz::Tz> =
+            if self.zones_on && spec.zones == crate::spec::ZoneAxes::All { self.zones.extra.clone() } else { Vec::new() };
 
         // Cell boxes once lines separate, with alternate months gently tinted.
         let box_a = a * boxn * (1. - heat);
@@ -722,6 +734,13 @@ impl CalmView {
                             hair(f, BACK, [x, c[1], x + 1., c[3]], ga * (1. - 0.4 * boxn));
                             if at_top(&c) && hr % step == 0 {
                                 label(f, TOP, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga), (x, py0 - 26.), 0.5);
+                                // Extra zones stack above, one row each.
+                                let date = self.data.date(d);
+                                for (j, tz) in zones.iter().enumerate() {
+                                    let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
+                                    let y = py0 - 26. - ZONE_ROW * (j + 1) as f32;
+                                    label(f, TOP, text, &fonts.regular, 10.5, with_alpha(th.faint, ga * 0.75), (x, y), 0.5);
+                                }
                             }
                         }
                     }
@@ -751,6 +770,17 @@ impl CalmView {
                         let (x, _) = inner.map(now / 1440., 0.);
                         f.push(FRONT, Cmd::Quad { b: [x - 1., c[1], x + 1., c[3]], r: 1., color: with_alpha(th.now, ga), border: None });
                         f.push(FRONT, Cmd::Quad { b: [x - 4., c[1] - 2., x + 4., c[1] + 6.], r: 4., color: with_alpha(th.now, ga), border: None });
+                    }
+                }
+                // Zone names beside their hour rows.
+                if !zones.is_empty() && ga > 0.01 && time_x {
+                    if let Some(&(d, _)) = vis.iter().find(|(_, c)| at_top(c)) {
+                        let date = self.data.date(d);
+                        zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, ga), (px0 - 12., py0 - 27.), None, ga);
+                        for (j, tz) in zones.iter().enumerate() {
+                            let y = py0 - 25. - ZONE_ROW * (j + 1) as f32;
+                            zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, ga), (px0 - 12., y - 2.), Some(*tz), ga);
+                        }
                     }
                 }
                 // Gutter: lanes or the demand scale for a single day.
@@ -841,7 +871,15 @@ impl CalmView {
                             }
                             hair(f, BACK, [ci[0], y, ci[2], y + 1.], ga * (1. - 0.5 * boxn));
                             if at_left(&c) && at_top(&c) && hr % step == 0 && hr > 0 && hr < 24 {
-                                label(f, LEFT, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga * (1. - boxn)), (px0 - 12., y - 7.), 1.);
+                                let la = ga * (1. - boxn);
+                                label(f, LEFT, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, la), (px0 - 12., y - 7.), 1.);
+                                // The same hour in each extra zone, one column further out each.
+                                let date = self.data.date(d);
+                                for (j, tz) in zones.iter().enumerate() {
+                                    let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
+                                    let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
+                                    label(f, LEFT, text, &fonts.regular, 10.5, with_alpha(th.faint, la * 0.75), (x, y - 7.), 1.);
+                                }
                             }
                         }
                         if d == today {
@@ -850,6 +888,18 @@ impl CalmView {
                                 f.push(FRONT, Cmd::Quad { b: [ci[0], y - 1., ci[2], y + 1.], r: 1., color: with_alpha(th.now, ga), border: None });
                                 f.push(FRONT, Cmd::Quad { b: [ci[0] - 4., y - 4., ci[0] + 4., y + 4.], r: 4., color: with_alpha(th.now, ga), border: None });
                             }
+                        }
+                    }
+                }
+                // Zone names heading the hour columns.
+                let za = a * grid * (1. - boxn);
+                if !zones.is_empty() && za > 0.01 && time_y {
+                    if let Some(&(d, _)) = vis.iter().find(|(_, c)| at_left(c) && at_top(c)) {
+                        let date = self.data.date(d);
+                        zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, za), (px0 - 12., py0 - 21.), None, za);
+                        for (j, tz) in zones.iter().enumerate() {
+                            let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
+                            zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, za), (x, py0 - 21.), Some(*tz), za);
                         }
                     }
                 }

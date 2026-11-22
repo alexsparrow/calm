@@ -36,6 +36,12 @@ use scene::Shape;
 const VIEWPORT: SpringCfg = SpringCfg { stiffness: 320., damping: 36. };
 /// How long input must pause before the zoom settles onto a stop.
 const SNAP_AFTER: Duration = Duration::from_millis(220);
+/// Left gutter when nothing is labelled beside the plot: just breathing room.
+const GUTTER_MIN: f32 = 20.;
+/// Bottom margin: the lens switcher and colour bar, plus a little air; and with the
+/// second (compose / legend) row that aggregate views add.
+const CONTROLS_ONE_ROW: f32 = 112.;
+const CONTROLS_TWO_ROWS: f32 = 152.;
 
 enum Hit {
     Rect([f32; 4]),
@@ -161,6 +167,16 @@ pub struct CalmView {
     stagger: bool,
     viewport: (f32, f32),
     layers: [Spring; PRESETS.len()],
+    /// Plot margins that fit what is actually drawn beside the plot.
+    margin_l: Spring,
+    margin_b: Spring,
+    margin_t: Spring,
+    /// Extra time zones (a global setting) and whether they are shown.
+    zones: crate::zones::Zones,
+    zones_on: bool,
+    /// Zone labels drawn this frame, for hover: (rect, zone; `None` is primary).
+    zone_hits: std::cell::RefCell<Vec<([f32; 4], Option<chrono_tz::Tz>)>>,
+    hover_zone: Option<Option<chrono_tz::Tz>>,
     switcher: Spring,
     drawer: Spring,
     tooltip: Spring,
@@ -271,6 +287,13 @@ impl CalmView {
             stagger: false,
             viewport: (0., 0.),
             layers,
+            margin_l: Spring::new(GUTTER_MIN),
+            margin_b: Spring::new(CONTROLS_ONE_ROW),
+            margin_t: Spring::new(scene::MARGIN_T),
+            zones: crate::zones::Zones::load(opts.zones.as_deref()),
+            zones_on: true,
+            zone_hits: Default::default(),
+            hover_zone: None,
             switcher: Spring::new(0.),
             drawer: Spring::new(0.),
             tooltip: Spring::new(0.),
@@ -361,9 +384,46 @@ impl CalmView {
     fn arr_of(&self, p: usize, target: bool) -> Arr {
         let l = &self.lenses[p];
         let spec = &PRESETS[p];
-        let (x, y, w, h) = scene::plot(self.viewport);
+        let (x, y, w, h) = self.plot();
         let (z, s) = if target { (l.zoom.target, l.start.target) } else { (l.zoom.x, l.start.x) };
         Arr { plot: [x, y, w, h], facet: spec.facet, n: z.exp2(), start: s, days: DAYS, boxed: spec.x == Axis::None }
+    }
+
+    /// The plot rectangle (x, y, w, h) inside the window.
+    fn plot(&self) -> (f32, f32, f32, f32) {
+        let (vw, vh) = self.viewport;
+        let (l, b) = (self.margin_l.x, self.margin_b.x);
+        let t = self.margin_t.x;
+        (l, t, (vw - l - scene::MARGIN_R).max(200.), (vh - t - b).max(200.))
+    }
+
+    /// Extra zones labelling the current lens's time axis (none if the grammar narrows to primary).
+    fn shown_zones(&self) -> Vec<chrono_tz::Tz> {
+        if self.zones_on && self.spec().zones == crate::spec::ZoneAxes::All {
+            self.zones.extra.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Left gutter wide enough for the labels the current lens draws there.
+    fn gutter_target(&self) -> f32 {
+        let spec = self.spec();
+        let lines = self.arr_of(self.preset, true).lines();
+        let single = lines < 1.12;
+        match (spec.coord, spec.facet.per_line, spec.facet.dir) {
+            (Coord::Polar, _, _) => GUTTER_MIN,
+            // Weekday names beside the columns.
+            (_, _, Dir::Columns) => 48.,
+            // Calendar names, or the demand scale and "Your energy".
+            (_, 1, _) if single => if spec.y == Axis::Calendar { 100. } else { 96. },
+            (_, 1, _) => GUTTER_MIN,
+            // Hour labels for a single week; month names once weeks stack; nothing for bands.
+            // Plus a column per extra time zone.
+            _ if single => 60. + scene::ZONE_COL * self.shown_zones().len() as f32,
+            _ if self.arr_of(self.preset, true).bands() < 1.3 => 64.,
+            _ => GUTTER_MIN,
+        }
     }
 
     fn arr(&self) -> Arr {
@@ -745,9 +805,15 @@ impl CalmView {
             moving |= l.step(dt, GENTLE);
         }
         self.drawer.target = if self.selected.is_some() { 1. } else { 0. };
-        self.tooltip.target = if (self.hovered.is_some() || self.hover_day.is_some()) && self.selected.is_none() { 1. } else { 0. };
+        let hovering = self.hovered.is_some() || self.hover_day.is_some() || self.hover_zone.is_some();
+        self.tooltip.target = if hovering && self.selected.is_none() { 1. } else { 0. };
         self.help.target = if self.help_on { 1. } else { 0. };
         self.detail_t.target = if self.details[self.preset] == Detail::DaySpan { 1. } else { 0. };
+        self.margin_l.target = self.gutter_target();
+        // A row of hour labels per extra zone above a horizontal time axis.
+        let rows = if self.spec().x == Axis::TimeOfDay { self.shown_zones().len() } else { 0 };
+        self.margin_t.target = scene::MARGIN_T + scene::ZONE_ROW * rows as f32;
+        self.margin_b.target = if self.aggregate() { CONTROLS_TWO_ROWS } else { CONTROLS_ONE_ROW };
         for (s, cfg) in [
             (&mut self.switcher, SNAPPY),
             (&mut self.drawer, GENTLE),
@@ -755,6 +821,9 @@ impl CalmView {
             (&mut self.help, SNAPPY),
             (&mut self.enc_t, GENTLE),
             (&mut self.detail_t, GENTLE),
+            (&mut self.margin_l, GENTLE),
+            (&mut self.margin_b, GENTLE),
+            (&mut self.margin_t, GENTLE),
         ] {
             moving |= s.step(dt, cfg);
         }
@@ -769,7 +838,7 @@ impl CalmView {
     }
 
     fn plot_contains(&self, (x, y): Pt) -> bool {
-        let (px, py, w, h) = scene::plot(self.viewport);
+        let (px, py, w, h) = self.plot();
         x >= px && x <= px + w && y >= py && y <= py + h
     }
 
@@ -783,7 +852,7 @@ impl CalmView {
     fn over_chrome(&self, (x, y): Pt) -> bool {
         let drawer = self.selected.is_some() && x > self.viewport.0 - chrome::DRAWER_W - 24.;
         let slider = x > self.viewport.0 - scene::MARGIN_R + 4.;
-        drawer || slider || y < chrome::TOPBAR_H || y > self.viewport.1 - scene::MARGIN_B + 6.
+        drawer || slider || y < chrome::TOPBAR_H || y > self.viewport.1 - self.margin_b.x + 6.
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -803,6 +872,7 @@ impl CalmView {
             "t" => self.go_today(),
             "c" => self.cycle_measure(),
             "g" => self.toggle_detail(),
+            "z" => self.zones_on = !self.zones_on,
             "v" => self.cycle_compose(),
             "b" => {
                 let mut enc = self.color();
@@ -836,6 +906,11 @@ impl CalmView {
     fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
         let pos: Pt = (ev.position.x.into(), ev.position.y.into());
         self.mouse = pos;
+        let zone = self.zone_hits.borrow().iter().find(|(r, _)| pos.0 >= r[0] && pos.0 <= r[2] && pos.1 >= r[1] && pos.1 <= r[3]).map(|(_, z)| *z);
+        if zone != self.hover_zone {
+            self.hover_zone = zone;
+            cx.notify();
+        }
         let (hovered, day) = if self.over_chrome(pos) {
             (None, None)
         } else {
@@ -879,13 +954,13 @@ impl CalmView {
             // Semantic zoom around the pointer.
             self.zoom_by(-dy * 0.006, Some(self.mouse));
         } else if ev.modifiers.alt {
-            let (x, y, w, h) = scene::plot(self.viewport);
+            let (x, y, w, h) = self.plot();
             let anchor = if self.spec().y == Axis::TimeOfDay { (self.mouse.1 - y) / h } else { (self.mouse.0 - x) / w };
             self.scroll_hours(0., (1. - dy * 0.003).clamp(0.5, 2.), anchor.clamp(0., 1.));
         } else if ev.modifiers.shift {
             self.scroll_cells(-(dx + dy));
         } else if self.scrolls_hours() && dy != 0. {
-            let (_, _, w, h) = scene::plot(self.viewport);
+            let (_, _, w, h) = self.plot();
             let l = self.lens();
             let span = l.hours[1].target - l.hours[0].target;
             let px = if self.spec().y == Axis::TimeOfDay { h } else { w };
@@ -996,7 +1071,14 @@ impl Render for CalmView {
         }
         self.sync_color();
         let dt = if self.still { 5. } else { interval.min(1. / 20.) };
+        let first = self.stats.intervals.is_empty() && self.stable_frames <= 1;
         let moving = self.step(dt);
+        if first {
+            // Open at the right margins rather than animating into them.
+            self.margin_l = Spring::new(self.margin_l.target);
+            self.margin_b = Spring::new(self.margin_b.target);
+            self.margin_t = Spring::new(self.margin_t.target);
+        }
         let t_build = Instant::now();
         let built = self.build(window);
         let build_ms = t_build.elapsed().as_secs_f32() * 1000.;
@@ -1016,6 +1098,7 @@ impl Render for CalmView {
         if waiting && self.stable_frames > 3 {
             if let Some(pos) = self.pending.0.take() {
                 self.mouse = pos;
+                self.hover_zone = self.zone_hits.borrow().iter().find(|(r, _)| pos.0 >= r[0] && pos.0 <= r[2] && pos.1 >= r[1] && pos.1 <= r[3]).map(|(_, z)| *z);
                 self.hovered = self.hit(pos);
                 self.hover_day = if self.hovered.is_none() { self.overview_day(pos) } else { None };
             }
@@ -1082,6 +1165,8 @@ pub struct Options {
     /// `measure[:compose]`, e.g. `hours:stripes`; a compose implies by-calendar.
     pub color: Option<String>,
     pub span: bool,
+    /// Extra time zones, overriding the config file: `America/New_York,Europe/London`.
+    pub zones: Option<String>,
 }
 
 impl Options {
@@ -1108,6 +1193,7 @@ impl Options {
                 "--select" => o.select = args.next().and_then(|s| parse_pt(&s)),
                 "--color" => o.color = args.next(),
                 "--span" => o.span = true,
+                "--zones" => o.zones = args.next(),
                 _ => eprintln!("calm: ignoring unknown argument {a}"),
             }
         }

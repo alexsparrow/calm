@@ -75,6 +75,7 @@ Every calendar view is defined by a declarative **View Specification** composed 
 | **`facet`** | How day cells tile the plane: a wrap of days into *lines*, lines stacked and wrapped into *bands*. This is the nesting operator: `y = week / timeOfDay` reads "time of day, nested within weeks" | `perLine` (7 = week rows, 1 = day rows), `dir` (`rows`, `columns`), `band` (lines per band, e.g. 13 = a quarter) |
 | **`lod`** | Semantic zoom: which `mark` to draw as cells shrink, with hysteresis | e.g. `block ≥ 240px`, `list ≥ 60px`, else `heat` |
 | **`stops`** | Zoom snap points and how each aligns to the calendar | `day`, `week` (line), `month` (lines spanning a month), `quarter`/`year` (groups from the origin) |
+| **`zones`** | Which time zones label the time axis. The zones themselves are a global setting (the system zone plus configured extras); a view can only narrow them | `all`, `primary` |
 
 With nesting, `x` and `y` describe coordinates *inside* a day cell, and `coord` applies per cell. A polar
 lens zoomed out becomes small multiples of dials.

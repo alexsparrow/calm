@@ -358,7 +358,10 @@ impl CalmView {
             return None;
         }
         let th = self.theme;
-        let (title, line1, line2, dot): (SharedString, String, Option<SharedString>, Hsla) = if let Some(i) = self.hovered {
+        let (title, line1, line2, dot): (SharedString, String, Option<SharedString>, Hsla) = if let Some(zone) = self.hover_zone {
+            let info = self.zones.info(zone);
+            (info.name.into(), info.now, Some(info.detail.into()), th.faint)
+        } else if let Some(i) = self.hovered {
             let e = &self.data.events[i];
             let date = self.data.date(e.day);
             let when = format!("{} {} · {}", DAY_NAMES[e.day.rem_euclid(7) as usize], date.day(), fmt_range(e.start_min, e.end_min()));
@@ -444,6 +447,21 @@ impl CalmView {
         let e = &self.data.events[i];
         let c = th.cals[e.calendar];
         let date = self.data.date(e.day);
+        // The event's time in each extra zone, flagging a different day.
+        let zone_rows: Vec<_> = if self.zones_on { self.zones.extra.clone() } else { Vec::new() }
+            .into_iter()
+            .map(|tz| {
+                let start = e.start_min + self.zones.delta(tz, date) as f32;
+                let day = match start.div_euclid(1440.) as i32 {
+                    0 => "",
+                    d if d > 0 => " · next day",
+                    _ => " · previous day",
+                };
+                let local = start.rem_euclid(1440.);
+                let text = format!("{} {}{day}", self.zones.label(tz, date), fmt_range(local, local + e.dur_min));
+                div().text_size(px(12.)).text_color(th.faint).child(text)
+            })
+            .collect();
         let overlaps: Vec<SharedString> = self
             .data
             .events
@@ -522,6 +540,7 @@ impl CalmView {
                         .gap(px(4.))
                         .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(date.format("%A %-d %B").to_string()))
                         .child(row(format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into()))
+                        .children(zone_rows)
                         .children(e.location.clone().map(row)),
                 )
                 .child({
@@ -696,7 +715,7 @@ impl CalmView {
         div()
             .absolute()
             .right(px(6.))
-            .top(px(super::scene::MARGIN_T))
+            .top(px(self.plot().1))
             .w(px(super::scene::MARGIN_R - 12.))
             .p(px(3.))
             .flex()
