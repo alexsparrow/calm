@@ -132,12 +132,25 @@ pub struct Settings {
     pub blur: bool,
     /// `light`, `dark` or `system`.
     pub theme: Option<String>,
+    /// The themes `system` switches between, and `colors` blocks.
+    pub theme_light: Option<String>,
+    pub theme_dark: Option<String>,
+    pub themes: Vec<crate::theme::ThemeDecl>,
     /// Each settings node's KDL, for `calm config dump`.
     text: Vec<String>,
 }
 
-/// (name, colour, demand)
-pub type CalendarDecl = (String, Option<String>, Option<f32>);
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CalendarDecl {
+    /// How sources refer to it (for Google, the calendar's name there).
+    pub name: String,
+    /// What the chip says, when the name is long or an address.
+    pub label: Option<String>,
+    pub color: Option<String>,
+    pub demand: Option<f32>,
+    /// Listed in the top-right menu rather than as a chip of its own.
+    pub secondary: bool,
+}
 
 /// (zone, short label, long name)
 pub type ZoneLabel = (String, Option<String>, Option<String>);
@@ -173,6 +186,8 @@ struct Loader {
     /// Sources declared in this load (a user list replaces nothing built in).
     sources: Vec<SourceDecl>,
     calendars: Vec<CalendarDecl>,
+    /// Theme names used by `theme` (file, line, col, name), checked in `check_refs`.
+    theme_refs: Vec<(String, usize, usize, String)>,
     /// `defaults "View" param=value …` nodes (file, line, col, node), applied in `check_refs`.
     param_defaults: Vec<(String, usize, usize, KdlNode)>,
     /// Each source's calendar (file, line, col, name, given explicitly), checked in `check_refs`.
@@ -318,19 +333,35 @@ impl Loader {
                     self.settings.text.push(node.to_string());
                 }
                 "theme" => {
-                    self.check_props(&at, node, &[]);
-                    if let Some(t) = self.arg_str(&at, node, 0, "light, dark or system")
-                        && self.choice(&at, node.span().offset(), "theme", &t, &[("light", ()), ("dark", ()), ("system", ())]).is_some()
-                    {
+                    // `theme "system"`, `theme "Paper"`, `theme light="Paper" dark="Night"`.
+                    self.check_props(&at, node, &["light", "dark"]);
+                    let (line, col) = at.pos(node.span().offset());
+                    let name = |this: &mut Self, v: Option<String>| {
+                        if let Some(v) = &v {
+                            this.theme_refs.push((at.file.to_string(), line, col, v.clone()));
+                        }
+                        v
+                    };
+                    let arg = Self::arg(node, 0).and_then(|e| e.value().as_string()).map(str::to_string);
+                    if let Some(t) = name(self, arg) {
                         self.settings.theme = Some(t);
-                        self.settings.text.push(node.to_string());
                     }
+                    let light = self.str_prop(&at, node, "light");
+                    if let Some(t) = name(self, light) {
+                        self.settings.theme_light = Some(t);
+                    }
+                    let dark = self.str_prop(&at, node, "dark");
+                    if let Some(t) = name(self, dark) {
+                        self.settings.theme_dark = Some(t);
+                    }
+                    self.settings.text.push(node.to_string());
                 }
+                "colors" => self.colors_node(&at, node),
                 "order" => {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
@@ -371,9 +402,9 @@ impl Loader {
         self.settings.text.push(node.to_string());
     }
 
-    /// `calendar "Work" color="sage" demand=0.6`
+    /// `calendar "Work" color="sage" demand=0.6 label="Work"`
     fn calendar_node(&mut self, at: &At, node: &KdlNode) {
-        self.check_props(at, node, &["color", "demand"]);
+        self.check_props(at, node, &["color", "demand", "label", "secondary"]);
         let off = node.span().offset();
         let Some(name) = self.arg_str(at, node, 0, "a name") else { return };
         let color = self.str_prop(at, node, "color");
@@ -389,7 +420,7 @@ impl Loader {
             self.err(at, off, "`demand` should be between 0 (light) and 1 (demanding)");
             return;
         }
-        if self.calendars.iter().any(|c| c.0.eq_ignore_ascii_case(&name)) {
+        if self.calendars.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
             self.err(at, off, format!("calendar `{name}` is declared twice"));
             return;
         }
@@ -398,7 +429,16 @@ impl Loader {
             return;
         }
         self.settings.text.push(node.to_string());
-        self.calendars.push((name, color, demand));
+        let label = self.str_prop(at, node, "label");
+        let secondary = match Self::prop(node, "secondary").map(|e| e.value()) {
+            Some(KdlValue::Bool(b)) => *b,
+            Some(v) => {
+                self.err(at, off, format!("`secondary` should be #true or #false, not {v}"));
+                return;
+            }
+            None => false,
+        };
+        self.calendars.push(CalendarDecl { name, label, color, demand, secondary });
     }
 
     /// `energy wake="7:00" sleep="23:00" peak="16:48" reactive=#true drain=0.3 recovery="60m" { at "9:00" 0.8 }`
@@ -528,13 +568,71 @@ impl Loader {
         }
     }
 
+    /// `colors "Paper" base="light" { bg "#f6f1e7" chrome "#ece4d6" }`; `colors "dark" { … }` tweaks a built-in.
+    fn colors_node(&mut self, at: &At, node: &KdlNode) {
+        self.check_props(at, node, &["base"]);
+        let off = node.span().offset();
+        let Some(name) = self.arg_str(at, node, 0, "a theme name") else { return };
+        let builtin = ["light", "dark"].contains(&name.to_ascii_lowercase().as_str());
+        let base = self.str_prop(at, node, "base");
+        let dark = match (builtin, base.as_deref()) {
+            (true, Some(_)) => {
+                self.err(at, off, format!("`{name}` is a built-in theme; `base` only applies to your own"));
+                return;
+            }
+            (true, None) => name.eq_ignore_ascii_case("dark"),
+            (false, None | Some("light")) => false,
+            (false, Some("dark")) => true,
+            (false, Some(b)) => {
+                self.err(at, off, format!("`base` should be \"light\" or \"dark\", not `{b}`"));
+                return;
+            }
+        };
+        if name.eq_ignore_ascii_case("system") {
+            self.err(at, off, "`system` follows your desktop between the light and dark themes; name your theme something else");
+            return;
+        }
+        let mut colors = Vec::new();
+        for child in Self::children(node) {
+            let token = child.name().value().to_string();
+            if !crate::theme::TOKENS.contains(&token.as_str()) {
+                self.err(at, child.span().offset(), format!("unknown colour `{token}`{}; one of: {}", suggest(&token, crate::theme::TOKENS), crate::theme::TOKENS.join(", ")));
+                continue;
+            }
+            self.check_props(at, child, &[]);
+            match Self::arg(child, 0).and_then(|e| e.value().as_string()).and_then(crate::theme::parse_hex) {
+                Some(c) => colors.push((token, c)),
+                None => self.err(at, child.span().offset(), format!("`{token}` needs a colour like \"#2a2724\" (or \"#2a2724cc\" with alpha)")),
+            }
+        }
+        // Later blocks for the same theme add to (and override) earlier ones.
+        match self.settings.themes.iter_mut().find(|t| t.name.eq_ignore_ascii_case(&name)) {
+            Some(t) => {
+                t.dark = dark;
+                t.colors.extend(colors);
+            }
+            None => self.settings.themes.push(crate::theme::ThemeDecl { name, dark, colors }),
+        }
+        self.settings.text.push(node.to_string());
+    }
+
     /// Every source's calendar must be declared, once any calendars are.
     fn check_refs(&mut self) {
         self.apply_defaults();
+        // Themes named by `theme` must be built in or declared with `colors`.
+        let mut known: Vec<String> = ["system", "light", "dark"].map(String::from).to_vec();
+        known.extend(self.settings.themes.iter().map(|t| t.name.clone()));
+        for (file, line, col, name) in std::mem::take(&mut self.theme_refs) {
+            if !known.iter().any(|k| k.eq_ignore_ascii_case(&name)) {
+                let refs: Vec<&str> = known.iter().map(String::as_str).collect();
+                let message = format!("no theme named `{name}`{} (declare one with `colors \"{name}\" base=\"light\" {{ … }}`)", suggest(&name, &refs));
+                self.diags.push(Diag { file, line, col, message });
+            }
+        }
         if self.calendars.is_empty() {
             return;
         }
-        let names: Vec<&str> = self.calendars.iter().map(|c| c.0.as_str()).collect();
+        let names: Vec<&str> = self.calendars.iter().map(|c| c.name.as_str()).collect();
         let mut bad = Vec::new();
         for (file, line, col, want, explicit) in &self.cal_refs {
             if !names.iter().any(|n| n.eq_ignore_ascii_case(want)) {

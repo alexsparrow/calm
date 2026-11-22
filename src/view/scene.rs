@@ -954,7 +954,7 @@ impl CalmView {
                             let (_, y1) = inner.map(0., (lane as f32 + 1.) / n);
                             let y = (y0 + y1) * 0.5;
                             f.push(LEFT, Cmd::Quad { b: [16., y - 4., 24., y + 4.], r: 4., color: with_alpha(th.cals[k].dot, single), border: None });
-                            label(f, LEFT, self.calendars[k].name.clone(), &fonts.medium, 12., with_alpha(th.muted, single), (30., y - 8.), 0.);
+                            label(f, LEFT, self.calendars[k].display().to_string(), &fonts.medium, 12., with_alpha(th.muted, single), (30., y - 8.), 0.);
                         }
                     } else {
                         label(f, LEFT, "Demanding".into(), &fonts.medium, 11.5, with_alpha(th.muted, single), (px0 - 14., c[1] + 4.), 1.);

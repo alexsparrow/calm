@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::Datelike;
 use gpui::{
-    Animation, AnimationExt, Context, FontWeight, Hsla, SharedString, Stateful, Div, div, ease_out_quint,
+    Animation, AnimationExt, AnyElement, Context, FontWeight, Hsla, SharedString, Stateful, Div, div, ease_out_quint,
     prelude::*, px,
 };
 
@@ -90,8 +90,8 @@ impl CalmView {
         let (title, subtitle) = self.title();
         let sync_line = self.status_line();
         let key = hash(&title) ^ hash(&subtitle);
-        let compact = self.viewport.0 < 940.;
-        let chips = (0..self.calendars.len()).map(|c| {
+        let ChipLayout { row: primary, names, compact, .. } = self.chip_layout();
+        let chips = primary.iter().enumerate().map(|(k, &c)| {
             let hidden = self.hidden[c];
             let dot = th.cals[c].dot;
             div()
@@ -121,7 +121,7 @@ impl CalmView {
                         .when(!hidden, |d| d.bg(dot))
                         .when(hidden, |d| d.border_1().border_color(th.faint)),
                 )
-                .when(!compact, |d| d.child(self.calendars[c].name.clone()))
+                .when(!compact, |d| d.child(names[k].clone()))
         });
         let can_pan = true;
 
@@ -163,23 +163,26 @@ impl CalmView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(self.clock(self.viewport.0 < 640.))
-                    .child(div().w(px(10.)))
-                    .children(chips)
-                    .child(div().w(px(14.)))
+                    .min_w_0()
+                    .child(div().flex_none().child(self.clock(self.viewport.0 < 640.)))
+                    .child(div().w(px(10.)).flex_none())
+                    // If even the dots don't fit, the chips clip rather than push the buttons out.
+                    .child(div().flex().items_center().gap(px(6.)).min_w_0().flex_shrink().overflow_hidden().children(chips))
+                    .child(div().w(px(14.)).flex_none())
                     .when(can_pan, |d| {
-                        d.child(self.button("prev", "‹").text_size(px(18.)).on_click(cx.listener(|this, _, _, cx| {
+                        d.child(self.button("prev", "‹").flex_none().text_size(px(18.)).on_click(cx.listener(|this, _, _, cx| {
                             this.pan(-1);
                             cx.notify();
                         })))
-                        .child(self.button("today", "Today").on_click(cx.listener(|this, _, _, cx| {
+                        .child(self.button("today", "Today").flex_none().on_click(cx.listener(|this, _, _, cx| {
                             this.go_today();
                             cx.notify();
                         })))
-                        .child(self.button("next", "›").text_size(px(18.)).on_click(cx.listener(|this, _, _, cx| {
+                        .child(self.button("next", "›").flex_none().text_size(px(18.)).on_click(cx.listener(|this, _, _, cx| {
                             this.pan(1);
                             cx.notify();
                         })))
+                        .child(self.hamburger(cx))
                     }),
             )
     }
@@ -264,77 +267,126 @@ impl CalmView {
         )
     }
 
-    /// Number of control rows the current view shows (for the bottom margin).
-    pub(super) fn param_rows(&self) -> usize {
-        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
-        let mut rows: Vec<u8> = spec.params.iter().filter(|p| spec.active(p, values, mark)).map(|p| p.row).collect();
-        rows.sort_unstable();
-        rows.dedup();
-        rows.len()
-    }
-
-    /// Controls generated from the view's declared params: a bar per row (row 1
-    /// nearest the lens switcher), segmented params as chip groups, toggles as
-    /// single chips, and the colour legend on the top-most row.
-    fn params_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Controls generated from the view's declared params, per row in row order:
+    /// segmented params as chip groups, toggles as single chips.
+    fn param_parts(&self, cx: &mut Context<Self>) -> Vec<Vec<AnyElement>> {
         let th = self.theme;
         let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
         let caption = |s: String| div().px(px(8.)).text_size(px(11.)).text_color(th.faint).child(s);
         let divider = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border);
-        let mut rows: std::collections::BTreeMap<u8, Div> = std::collections::BTreeMap::new();
+        let mut rows: std::collections::BTreeMap<u8, Vec<AnyElement>> = std::collections::BTreeMap::new();
         for p in spec.params.iter().filter(|p| spec.active(p, values, mark)) {
-            let fresh = !rows.contains_key(&p.row);
-            let mut row = rows.remove(&p.row).unwrap_or_else(|| self.bar());
-            if !fresh {
-                row = row.child(divider());
+            let row = rows.entry(p.row).or_default();
+            if !row.is_empty() {
+                row.push(divider().into_any_element());
             }
             let current = spec.value(&p.name, values, mark);
             match p.bind {
                 Bind::Segmented => {
                     if let Some(l) = &p.label {
-                        row = row.child(caption(l.clone()));
+                        row.push(caption(l.clone()).into_any_element());
                     }
                     for (i, o) in spec.options(p, values, mark).enumerate() {
                         let (name, value) = (p.name.clone(), o.value.clone());
                         let id = gpui::ElementId::NamedInteger(p.name.clone().into(), i as u64);
-                        row = row.child(self.chip(id, o.label.clone(), o.value == current).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_param(&name, &value);
-                            cx.notify();
-                        })));
+                        row.push(
+                            self.chip(id, o.label.clone(), o.value == current)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_param(&name, &value);
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        );
                     }
                 }
                 Bind::Toggle => {
                     let on = current == "true";
                     let name = p.name.clone();
                     let label = p.label.clone().unwrap_or_else(|| p.name.clone());
-                    row = row.child(self.chip(gpui::ElementId::Name(p.name.clone().into()), label, on).on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_param(&name, if on { "false" } else { "true" });
-                        cx.notify();
-                    })));
+                    row.push(
+                        self.chip(gpui::ElementId::Name(p.name.clone().into()), label, on)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_param(&name, if on { "false" } else { "true" });
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    );
                 }
             }
-            rows.insert(p.row, row);
         }
-        if let (Some(legend), Some((_, top))) = (self.legend(), rows.iter_mut().next_back()) {
-            *top = std::mem::replace(top, div()).child(divider()).child(legend);
-        }
-        div().flex().flex_col().items_center().gap(px(6.)).children(rows.into_values().rev())
+        rows.into_values().collect()
     }
 
+    /// About how wide the view's controls are laid out in one bar (for fitting the bottom row).
+    fn params_width(&self) -> f32 {
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let text = |s: &str| s.chars().count() as f32 * 6.9;
+        let mut w = 10.;
+        let mut items = 0;
+        for p in spec.params.iter().filter(|p| spec.active(p, values, mark)) {
+            items += 1;
+            w += match p.bind {
+                Bind::Segmented => {
+                    p.label.as_deref().map_or(0., |l| 16. + text(l) * 0.92) + spec.options(p, values, mark).map(|o| 22. + text(&o.label)).sum::<f32>()
+                }
+                Bind::Toggle => 22. + text(p.label.as_deref().unwrap_or(&p.name)),
+            };
+        }
+        if items == 0 {
+            return 0.;
+        }
+        w + (items - 1) as f32 * 9. + if self.legend().is_some() { 190. } else { 0. }
+    }
+
+    /// The view's controls in one bar, legend last.
+    fn params_inline(&self, cx: &mut Context<Self>) -> Div {
+        let th = self.theme;
+        let mut bar = self.bar();
+        for (i, part) in self.param_parts(cx).into_iter().enumerate() {
+            if i > 0 {
+                bar = bar.child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border));
+            }
+            bar = bar.children(part);
+        }
+        if let Some(legend) = self.legend() {
+            bar = bar.child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border)).child(legend);
+        }
+        bar
+    }
+
+    /// The same controls stacked a bar per row (row 1 nearest the bottom), for the popup.
+    fn params_stacked(&self, cx: &mut Context<Self>) -> Div {
+        let th = self.theme;
+        // In the popup, a row wraps rather than run past the window.
+        let max = self.viewport.0 - 32.;
+        let mut bars: Vec<Div> = self
+            .param_parts(cx)
+            .into_iter()
+            .map(|part| self.bar().flex_wrap().justify_center().rounded(px(18.)).max_w(px(max)).children(part))
+            .collect();
+        if let (Some(legend), Some(top)) = (self.legend(), bars.last_mut()) {
+            *top = std::mem::replace(top, div()).child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border)).child(legend);
+        }
+        div().flex().flex_col().items_center().gap(px(6.)).children(bars.into_iter().rev())
+    }
+
+    /// The bottom row: view picker at the left, the view's controls in the centre (or a
+    /// button opening them, when they don't fit), the zoom strip at the right.
     pub(super) fn switcher(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let th = self.theme;
-        let color_bar = self.params_bar(cx);
+        let BottomLayout { item, params, params_x, .. } = self.bottom_layout();
         let items = self.views.iter().enumerate().map(|(i, p)| {
             let active = i == self.preset;
             div()
                 .id(("lens", i))
-                .w(px(SWITCH_W))
+                .w(px(item))
                 .h(px(30.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded_full()
-                .text_size(px(12.5))
+                .overflow_hidden()
+                .text_size(px(if item < 60. { 11. } else { 12.5 }))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if active { th.ink } else { th.faint })
                 .cursor_pointer()
@@ -343,41 +395,83 @@ impl CalmView {
                     this.set_preset(i);
                     cx.notify();
                 }))
-                .child(p.name.clone())
+                // Very narrow: the first two letters.
+                .child(if item < 44. { p.name.chars().take(2).collect::<String>() } else { p.name.clone() })
         });
-        div()
+        let picker = div()
             .absolute()
             .bottom(px(18.))
-            .left_0()
-            .right_0()
+            .left(px(16.))
+            .p(px(4.))
             .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(8.))
-            .child(color_bar)
+            .rounded_full()
+            .bg(th.surface)
+            .border_1()
+            .border_color(th.border)
+            .shadow_sm()
             .child(
+                // Sliding selection, driven by a spring so it can be interrupted.
                 div()
-                    .relative()
-                    .p(px(4.))
-                    .flex()
+                    .absolute()
+                    .top(px(4.))
+                    .left(px(4. + self.switcher.x * item))
+                    .w(px(item))
+                    .h(px(30.))
                     .rounded_full()
-                    .bg(th.surface)
-                    .border_1()
-                    .border_color(th.border)
-                    .shadow_sm()
-                    .child(
-                        // Sliding selection, driven by a spring so it can be interrupted.
-                        div()
-                            .absolute()
-                            .top(px(4.))
-                            .left(px(4. + self.switcher.x * SWITCH_W))
-                            .w(px(SWITCH_W))
-                            .h(px(30.))
-                            .rounded_full()
-                            .bg(with_alpha(th.ink, if th.dark { 0.12 } else { 0.07 })),
-                    )
-                    .children(items),
+                    .bg(with_alpha(th.ink, if th.dark { 0.12 } else { 0.07 })),
             )
+            .children(items);
+        let controls = match params {
+            Params::None => None,
+            Params::Inline => Some(div().absolute().bottom(px(21.)).left(px(params_x)).child(self.params_inline(cx))),
+            Params::Button(tier) => Some(
+                div().absolute().bottom(px(21.)).left(px(params_x)).child(
+                    self.bar().child(
+                        self.chip("params-button", self.params_label(tier), self.params_open)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.params_open = !this.params_open;
+                                cx.notify();
+                            })),
+                    ),
+                ),
+            ),
+        };
+        // The popup: every control, stacked, above the row.
+        let popup = (matches!(params, Params::Button(_)) && self.params_open).then(|| {
+            div()
+                .absolute()
+                .bottom(px(18. + 40. + 8.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(div().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(self.params_stacked(cx)))
+        });
+        div().absolute().top_0().left_0().right_0().bottom_0().child(picker).children(controls).children(popup)
+    }
+
+    /// The collapsed controls' button: "Colour: Calendar ▴", "Calendar ▴", or "⋯".
+    fn params_label(&self, tier: u8) -> String {
+        let (label, value) = self.params_summary();
+        match tier {
+            0 => format!("{label}: {value} ▴"),
+            1 => format!("{value} ▴"),
+            _ => "⋯".into(),
+        }
+    }
+
+    /// The first choice among the view's controls, and what it's set to.
+    fn params_summary(&self) -> (String, String) {
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        spec.params
+            .iter()
+            .filter(|p| spec.active(p, values, mark) && p.bind == Bind::Segmented)
+            .find_map(|p| {
+                let v = spec.value(&p.name, values, mark);
+                let o = spec.options(p, values, mark).find(|o| o.value == v)?;
+                Some((p.label.clone().unwrap_or_else(|| p.name.clone()), o.label.clone()))
+            })
+            .unwrap_or_else(|| ("Controls".into(), "Controls".into()))
     }
 
     pub(super) fn tooltip_card(&self) -> Option<impl IntoElement + use<>> {
@@ -428,7 +522,7 @@ impl CalmView {
                 Measure::Strain => format!("{v:.1}h strained"),
                 _ => format!("{v:.1}h"),
             };
-            let breakdown = parts.iter().map(|&(c, v)| format!("{} {}", self.calendars[c].name, fmt(v))).collect::<Vec<_>>().join(" · ");
+            let breakdown = parts.iter().map(|&(c, v)| format!("{} {}", self.calendars[c].display(), fmt(v))).collect::<Vec<_>>().join(" · ");
             let dot = parts.first().map_or(th.cell, |&(c, _)| th.cals[c].dot);
             let span = s.bounds(&self.hidden).map(|(a, b)| format!("{} – {} · {:.1}h span", super::scene::fmt_time(a), super::scene::fmt_time(b), (b - a) / 60.));
             let timing = matches!(m, Measure::Starts | Measure::Ends | Measure::Span) || self.detail() == Detail::DaySpan;
@@ -552,7 +646,7 @@ impl CalmView {
                                         .items_center()
                                         .gap(px(8.))
                                         .child(div().size(px(9.)).rounded_full().bg(c.dot))
-                                        .child(div().text_size(px(12.)).text_color(th.muted).child(self.calendars.get(e.calendar).map_or(String::new(), |c| c.name.clone())))
+                                        .child(div().text_size(px(12.)).text_color(th.muted).child(self.calendars.get(e.calendar).map_or(String::new(), |c| c.display().to_string())))
                                         .when(e.status == Status::Tentative, |d| {
                                             d.child(
                                                 div()
@@ -650,6 +744,7 @@ impl CalmView {
             ("F, click hour labels", "Full day / default hours"),
             ("T", "Jump to today"),
             ("E", "Edit this view"),
+            ("M", "Menu: more calendars, actions"),
             ("Z", "Extra time zones"),
             ("R", "Sync calendars now"),
             ("D", "Light / dark"),
@@ -747,11 +842,7 @@ impl CalmView {
             (k as f32 + ((z - a) / (b - a)).clamp(0., 1.)).min((logs.len() - 1) as f32)
         };
         let nearest = pos.round() as usize;
-        let n = spec.stops.len() as f32;
-        // Room to the right of the centred switcher.
-        let switcher_w = self.views.len() as f32 * SWITCH_W + 10.;
-        let room = (self.viewport.0 - switcher_w) * 0.5 - 28.;
-        let short = room < n * 58. + 8.;
+        let BottomLayout { short, zoom_x, .. } = self.bottom_layout();
         let item = if short { 26. } else { 58. };
         let items = spec.stops.iter().enumerate().map(|(i, s)| {
             let label: String = if short { s.name.chars().take(1).collect() } else { s.name.clone() };
@@ -776,8 +867,8 @@ impl CalmView {
         });
         div()
             .absolute()
-            .right(px(16.))
-            // Centred on the switcher row (40 px tall, 18 px up).
+            .left(px(zoom_x))
+            // Level with the view picker (40 px tall, 18 px up).
             .bottom(px(21.))
             .p(px(3.))
             .flex()
@@ -1040,5 +1131,222 @@ impl CalmView {
             }
             Baseline::Points(_) => section.child(div().text_size(px(11.)).text_color(th.faint).child("Your own curve, from calm.kdl")),
         }
+    }
+}
+
+impl CalmView {
+    /// Three bars, top right: opens the menu.
+    fn hamburger(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let th = self.theme;
+        let bar = || div().w(px(16.)).h(px(1.75)).rounded_full().bg(if self.menu_on { th.ink } else { th.muted });
+        self.button("menu", "")
+            .flex_none()
+            .ml(px(4.))
+            .w(px(34.))
+            .justify_center()
+            .when(self.menu_on, |d| d.bg(with_alpha(th.ink, 0.07)))
+            .child(div().flex().flex_col().gap(px(3.5)).child(bar()).child(bar()).child(bar()))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.menu_on = !this.menu_on;
+                cx.notify();
+            }))
+    }
+
+    /// The top-right menu: secondary calendars, then everyday actions with their keys.
+    pub(super) fn menu_panel(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let t = self.menu.x;
+        if t < 0.01 {
+            return None;
+        }
+        let th = self.theme;
+        let heading = |s: &'static str| div().px(px(10.)).pt(px(6.)).pb(px(2.)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(th.faint).child(s.to_uppercase());
+        let row = |id: gpui::ElementId| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(8.))
+                .text_size(px(13.))
+                .text_color(th.ink)
+                .cursor_pointer()
+                .hover(move |s| s.bg(with_alpha(th.ink, 0.06)))
+        };
+        let secondary = self.chip_layout().menu;
+        let calendars = secondary.iter().map(|&c| {
+            let hidden = self.hidden[c];
+            let dot = th.cals[c].dot;
+            row(gpui::ElementId::Name(format!("menu-cal-{c}").into()))
+                .child(div().size(px(8.)).rounded_full().when(!hidden, |d| d.bg(dot)).when(hidden, |d| d.border_1().border_color(th.faint)))
+                .child(div().flex_1().text_color(if hidden { th.faint } else { th.ink }).child(self.calendars[c].display().to_string()))
+                .child(div().text_size(px(11.5)).text_color(th.faint).child(if hidden { "Hidden" } else { "Shown" }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_calendar(c);
+                    cx.notify();
+                }))
+        });
+        let action = |id: &'static str, label: &'static str, key: &'static str| {
+            row(id.into()).child(div().flex_1().child(label)).child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(key))
+        };
+        Some(
+            div()
+                .id("menu-panel")
+                .absolute()
+                .top(px(TOPBAR_H - 6.))
+                .right(px(20.))
+                .w(px(260.))
+                .opacity(t.clamp(0., 1.))
+                .mt(px(-6. * (1. - t)))
+                .p(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .rounded(px(14.))
+                .bg(th.surface)
+                .border_1()
+                .border_color(th.border)
+                .shadow_lg()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
+                .child(action("menu-edit", "Edit this view", "E").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.editor_on = true;
+                    cx.notify();
+                })))
+                .child(action("menu-sync", "Sync now", "R").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.sync_now();
+                    cx.notify();
+                })))
+                .child(action("menu-theme", if th.dark { "Light mode" } else { "Dark mode" }, "D").on_click(cx.listener(|this, _, _, cx| {
+                    this.toggle_theme();
+                    cx.notify();
+                })))
+                .child(action("menu-help", "Keyboard shortcuts", "?").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.help_on = true;
+                    cx.notify();
+                }))),
+        )
+    }
+}
+
+/// Which calendars get chips, and how they're labelled; the rest go in the menu.
+pub(super) struct ChipLayout {
+    pub row: Vec<usize>,
+    /// Chip labels, parallel to `row`; empty when `compact`.
+    pub names: Vec<String>,
+    /// Dots only.
+    pub compact: bool,
+    /// Secondary calendars, then any that don't fit even as dots.
+    pub menu: Vec<usize>,
+}
+
+impl CalmView {
+    /// Chips get what the title, clock and buttons leave: names first (long ones cut
+    /// short), else just the dots, and whatever still doesn't fit moves to the menu.
+    pub(super) fn chip_layout(&self) -> ChipLayout {
+        let (title, subtitle) = self.title();
+        let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { s.chars().take(n - 1).chain(std::iter::once('…')).collect() } else { s.to_string() } };
+        let status_len = self.status_line().map_or(0, |(t, _)| t.chars().count() + 3);
+        let title_w = (title.chars().count() as f32 * 11.5).max((subtitle.chars().count() + status_len) as f32 * 6.6);
+        // Measured: the clock column ~70, spacers 24, ‹ Today › and ☰ ~175, padding 56, gap 16.
+        let clock_w = if self.viewport.0 < 640. { 50. } else { 70. };
+        let room = self.viewport.0 - 56. - title_w - clock_w - 24. - 175. - 16.;
+        let (mut row, mut menu): (Vec<usize>, Vec<usize>) = (0..self.calendars.len()).partition(|&c| !self.calendars[c].secondary);
+        let width = |names: &[String]| -> f32 { names.iter().map(|n| 41. + n.chars().count() as f32 * 6.9).sum() };
+        // Longest names that fit: up to 18 characters, then 10.
+        for n in [18, 10] {
+            let names: Vec<String> = row.iter().map(|&c| cut(self.calendars[c].display(), n)).collect();
+            if width(&names) <= room {
+                return ChipLayout { row, names, compact: false, menu };
+            }
+        }
+        // Dots (34 px and a gap each); the rest join the menu, after the secondary ones.
+        let fit = ((room / 40.).floor().max(0.) as usize).min(row.len());
+        menu.extend(row.split_off(fit));
+        ChipLayout { row, names: Vec::new(), compact: true, menu }
+    }
+}
+
+impl CalmView {
+    /// The top and bottom bars' own colour, when the theme gives them one (`chrome`).
+    pub(super) fn chrome_bands(&self) -> Option<impl IntoElement + use<>> {
+        let th = self.theme;
+        if th.chrome.a < 0.002 {
+            return None;
+        }
+        let bottom = (self.margin_b.x - 6.).max(0.);
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .child(div().absolute().top_0().left_0().right_0().h(px(TOPBAR_H)).bg(th.chrome).border_b_1().border_color(th.border))
+                .child(div().absolute().bottom_0().left_0().right_0().h(px(bottom)).bg(th.chrome).border_t_1().border_color(th.border)),
+        )
+    }
+}
+
+/// How the view's controls appear in the bottom row.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Params {
+    None,
+    Inline,
+    /// One button opening them in a popup, labelled "Colour: Calendar", "Calendar" or "⋯".
+    Button(u8),
+}
+
+/// Where the bottom row's pieces go: the view picker at the left (items `item` wide), the
+/// view's controls centred at `params_x`, the zoom strip at the right (initials if `short`).
+pub(super) struct BottomLayout {
+    pub item: f32,
+    pub short: bool,
+    pub zoom_x: f32,
+    pub params: Params,
+    pub params_x: f32,
+}
+
+impl CalmView {
+    /// Fits the bottom row to the window. Giving way in order: zoom labels shorten,
+    /// picker items narrow, then the controls fold into one button (and narrow again).
+    pub(super) fn bottom_layout(&self) -> BottomLayout {
+        let vw = self.viewport.0;
+        let (n, stops) = (self.views.len() as f32, self.spec().stops.len() as f32);
+        let (margin, gap) = (16., 16.);
+        let picker = |item: f32| n * item + 10.;
+        let zoom = |short: bool| stops * if short { 26. } else { 58. } + 8.;
+        let inline_w = self.params_width();
+        let button_w = |tier: u8| 32. + self.params_label(tier).chars().count() as f32 * 6.9;
+        let mode_w = |m: Params| match m {
+            Params::None => 0.,
+            Params::Inline => inline_w,
+            Params::Button(t) => button_w(t),
+        };
+        // The controls sit centred in the window if they can, else as near it as the slot allows.
+        let place = |item: f32, short: bool, mode: Params| -> Option<BottomLayout> {
+            let (lo, hi) = (margin + picker(item) + gap, vw - margin - zoom(short) - gap);
+            let w = mode_w(mode);
+            (hi - lo >= w).then(|| BottomLayout { item, short, zoom_x: vw - margin - zoom(short), params: mode, params_x: ((vw - w) * 0.5).clamp(lo, (hi - w).max(lo)) })
+        };
+        let shrunk = |short: bool, mode: Params| -> f32 {
+            // Picker items as wide as the slot allows, between 48 and full size.
+            // Readable names (48 px) before anything else gives way; narrower only as a last resort.
+            ((vw - 2. * margin - zoom(short) - 2. * gap - mode_w(mode) - 10.) / n).clamp(48., SWITCH_W)
+        };
+        let modes: &[Params] = if inline_w == 0. { &[Params::None] } else { &[Params::Inline, Params::Button(0), Params::Button(1), Params::Button(2)] };
+        for &mode in modes {
+            for (item, short) in [(SWITCH_W, false), (SWITCH_W, true), (shrunk(true, mode), true)] {
+                if let Some(l) = place(item, short, mode) {
+                    return l;
+                }
+            }
+        }
+        // Narrower still: tighter gaps, and picker items down to two letters.
+        let mode = *modes.last().unwrap();
+        let tight = 8.;
+        let item = ((vw - 2. * margin - zoom(true) - 2. * tight - mode_w(mode) - 10.) / n).clamp(34., SWITCH_W);
+        BottomLayout { item, short: true, zoom_x: vw - margin - zoom(true), params: mode, params_x: margin + picker(item) + tight }
     }
 }

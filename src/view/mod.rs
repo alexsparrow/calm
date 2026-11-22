@@ -40,8 +40,8 @@ const SNAP_AFTER: Duration = Duration::from_millis(220);
 const GUTTER_MIN: f32 = 20.;
 /// Bottom margin: the lens switcher and colour bar, plus a little air; and with the
 /// second (compose / legend) row that aggregate views add.
-const CONTROLS_ONE_ROW: f32 = 112.;
-const CONTROLS_TWO_ROWS: f32 = 152.;
+/// Room for the bottom row (picker, controls, zoom): 18 up, 40 tall, and a little air.
+const CONTROLS_ROW: f32 = 74.;
 
 enum Hit {
     Rect([f32; 4]),
@@ -148,6 +148,9 @@ pub struct CalmView {
     fonts: Fonts,
     theme: Theme,
     theme_override: Option<bool>,
+    /// calm.kdl's themes, and whether the desktop is in dark mode.
+    looks: crate::theme::Looks,
+    system_dark: bool,
     /// Window background opacity when translucent.
     translucent: Option<f32>,
     _appearance: Subscription,
@@ -207,6 +210,11 @@ pub struct CalmView {
     tooltip: Spring,
     help: Spring,
     help_on: bool,
+    /// The top-right menu (secondary calendars, actions).
+    menu: Spring,
+    menu_on: bool,
+    /// The view's controls, popped up from their button when they don't fit the bottom row.
+    params_open: bool,
     hud_on: bool,
     mouse: Pt,
     hits: Vec<(usize, Hit)>,
@@ -242,7 +250,8 @@ impl CalmView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
-            this.theme = theme_for(this.theme_override, window.appearance(), this.translucent, &this.calendars);
+            this.system_dark = is_dark(window.appearance());
+            this.retheme();
             cx.notify();
         });
         // Notice edits to calm.kdl (and its includes) and apply them live.
@@ -315,8 +324,10 @@ impl CalmView {
         let mut this = Self {
             focus,
             fonts: Fonts::new(),
-            theme: theme_for(None, window.appearance(), opts.opacity, &calendars),
-            theme_override: None,
+            theme: theme_for(opts.dark, is_dark(window.appearance()), opts.opacity, &calendars, &looks_of(&config.settings)),
+            theme_override: opts.dark,
+            looks: looks_of(&config.settings),
+            system_dark: is_dark(window.appearance()),
             translucent: opts.opacity,
             _appearance: appearance,
             cells: Vec::new(),
@@ -345,7 +356,7 @@ impl CalmView {
             viewport: (0., 0.),
             layers,
             margin_l: Spring::new(GUTTER_MIN),
-            margin_b: Spring::new(CONTROLS_ONE_ROW),
+            margin_b: Spring::new(CONTROLS_ROW),
             margin_t: Spring::new(scene::MARGIN_T),
             zones: crate::zones::Zones::load(opts.zones.as_deref(), config.settings.zones.as_ref()),
             zones_on: true,
@@ -358,6 +369,9 @@ impl CalmView {
             tooltip: Spring::new(0.),
             help: Spring::new(0.),
             help_on: false,
+            menu: Spring::new(0.),
+            menu_on: opts.menu,
+            params_open: opts.controls,
             hud_on: opts.bench,
             mouse: (-1., -1.),
             hits: Vec::new(),
@@ -388,17 +402,7 @@ impl CalmView {
             place: None,
         };
         this.restat();
-        // The command line wins over calm.kdl's `theme`.
-        let dark = opts.dark.or(match config.settings.theme.as_deref() {
-            Some("dark") => Some(true),
-            Some("light") => Some(false),
-            _ => None,
-        });
         this.resolve_place(&config.settings);
-        if let Some(dark) = dark {
-            this.theme_override = Some(dark);
-            this.theme = theme_for(Some(dark), window.appearance(), this.translucent, &this.calendars);
-        }
         if let Some(lens) = opts.lens {
             this.set_preset(lens.min(this.views.len() - 1));
         }
@@ -929,18 +933,20 @@ impl CalmView {
         self.tooltip.target = if hovering && self.selected.is_none() { 1. } else { 0. };
         self.help.target = if self.help_on { 1. } else { 0. };
         self.editor.target = if self.editor_on { 1. } else { 0. };
+        self.menu.target = if self.menu_on { 1. } else { 0. };
         self.detail_t.target = if self.detail() == Detail::DaySpan { 1. } else { 0. };
         self.margin_l.target = self.gutter_target();
         // A row of hour labels per extra zone above a horizontal time axis.
         let rows = if self.spec().x == Axis::TimeOfDay { self.shown_zones().len() } else { 0 };
         self.margin_t.target = scene::MARGIN_T + scene::ZONE_ROW * rows as f32;
-        self.margin_b.target = CONTROLS_ONE_ROW + (CONTROLS_TWO_ROWS - CONTROLS_ONE_ROW) * self.param_rows().saturating_sub(1) as f32;
+        self.margin_b.target = CONTROLS_ROW;
         for (s, cfg) in [
             (&mut self.switcher, SNAPPY),
             (&mut self.drawer, GENTLE),
             (&mut self.tooltip, SNAPPY),
             (&mut self.help, SNAPPY),
             (&mut self.editor, SNAPPY),
+            (&mut self.menu, SNAPPY),
             (&mut self.enc_t, GENTLE),
             (&mut self.detail_t, GENTLE),
             (&mut self.margin_l, GENTLE),
@@ -1004,20 +1010,13 @@ impl CalmView {
             "t" => self.go_today(),
             "f" => self.toggle_full_day(),
             "z" => self.zones_on = !self.zones_on,
+            "m" => self.menu_on = !self.menu_on,
             "e" => {
                 self.editor_on = !self.editor_on;
                 self.editor_note = None;
             }
-            "r" => {
-                if let Some(s) = &self.sync {
-                    let _ = s.commands.send(crate::sync::Command::Refresh);
-                }
-            }
-            "d" => {
-                let dark = !self.theme.dark;
-                self.theme_override = Some(dark);
-                self.theme = theme_for(Some(dark), WindowAppearance::Light, self.translucent, &self.calendars);
-            }
+            "r" => self.sync_now(),
+            "d" => self.toggle_theme(),
             "?" => self.help_on = !self.help_on,
             "/" if k.modifiers.shift => self.help_on = !self.help_on,
             "`" => self.hud_on = !self.hud_on,
@@ -1026,7 +1025,10 @@ impl CalmView {
                 self.set_data(model::generate(if self.stress { 3 } else { 1 }));
             }
             "escape" => {
-                if self.help_on {
+                if self.menu_on || self.params_open {
+                    self.menu_on = false;
+                    self.params_open = false;
+                } else if self.help_on {
                     self.help_on = false;
                 } else if self.editor_on {
                     self.editor_on = false;
@@ -1067,6 +1069,13 @@ impl CalmView {
     fn on_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
         let pos: Pt = (ev.position.x.into(), ev.position.y.into());
         if self.over_chrome(pos) {
+            return;
+        }
+        // A click outside the open menu just closes it.
+        if self.menu_on || self.params_open {
+            self.menu_on = false;
+            self.params_open = false;
+            cx.notify();
             return;
         }
         if self.on_hour_axis(pos) {
@@ -1178,9 +1187,23 @@ impl CalmView {
     }
 }
 
-fn theme_for(override_dark: Option<bool>, appearance: WindowAppearance, translucent: Option<f32>, calendars: &[Calendar]) -> Theme {
-    let dark = override_dark.unwrap_or(matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark));
-    let theme = (if dark { Theme::dark() } else { Theme::light() }).with_calendars(calendars);
+fn is_dark(appearance: WindowAppearance) -> bool {
+    matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark)
+}
+
+fn looks_of(settings: &crate::viewconf::Settings) -> crate::theme::Looks {
+    crate::theme::Looks {
+        choice: settings.theme.clone(),
+        light: settings.theme_light.clone(),
+        dark: settings.theme_dark.clone(),
+        themes: settings.themes.clone(),
+    }
+}
+
+/// The theme to draw with: `D` (or the command line) first, then calm.kdl's choice, then the desktop.
+fn theme_for(override_dark: Option<bool>, system_dark: bool, translucent: Option<f32>, calendars: &[Calendar], looks: &crate::theme::Looks) -> Theme {
+    let dark = override_dark.or(looks.forced()).unwrap_or(system_dark);
+    let theme = looks.build(dark).with_calendars(calendars);
     match translucent {
         Some(opacity) => theme.translucent(opacity),
         None => theme,
@@ -1273,6 +1296,8 @@ impl Render for CalmView {
             .on_mouse_move(cx.listener(|this, ev, _, cx| this.on_move(ev, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev, _, cx| this.on_down(ev, cx)))
             .on_scroll_wheel(cx.listener(|this, ev, _, cx| this.on_scroll(ev, cx)))
+            // Bar backgrounds sit under the canvas, so headers and labels draw over them.
+            .children(self.chrome_bands())
             .child(
                 canvas(
                     |_, _, _| {},
@@ -1291,6 +1316,7 @@ impl Render for CalmView {
             .children(self.tooltip_card())
             .children(self.drawer_card(cx))
             .children(self.editor_panel(cx))
+            .children(self.menu_panel(cx))
             .children(self.help_card())
             .children(self.hud())
     }
@@ -1302,6 +1328,10 @@ pub struct Options {
     pub still: bool,
     /// Open with the view editor showing (screenshots).
     pub edit: bool,
+    /// Open with the top-right menu showing (screenshots).
+    pub menu: bool,
+    /// Open with the controls popup showing, when they're folded into a button (screenshots).
+    pub controls: bool,
     pub cycle: bool,
     /// Background opacity; `None` is an opaque window.
     pub opacity: Option<f32>,
@@ -1331,6 +1361,8 @@ impl Options {
                 "--bench" => o.bench = true,
                 "--still" => o.still = true,
                 "--edit" => o.edit = true,
+                "--menu" => o.menu = true,
+                "--controls" => o.controls = true,
                 "--cycle" => o.cycle = true,
                 // Like a translucent terminal: a mostly solid background, no blur.
                 "--translucent" => o.opacity = o.opacity.or(Some(0.8)),
@@ -1580,16 +1612,14 @@ impl CalmView {
         if !self.pinned.zones {
             self.zones = crate::zones::Zones::load(None, settings.zones.as_ref());
         }
-        if !self.pinned.theme {
-            let dark = match settings.theme.as_deref() {
-                Some("dark") => Some(true),
-                Some("light") => Some(false),
-                _ => None,
-            };
-            if dark != self.theme_override {
-                self.theme_override = dark;
-                self.theme = theme_for(dark, WindowAppearance::Light, self.translucent, &self.calendars);
+        let looks = looks_of(settings);
+        if looks != self.looks {
+            // A new choice of theme takes over from `D`, unless the command line pinned one.
+            if !self.pinned.theme {
+                self.theme_override = None;
             }
+            self.looks = looks;
+            self.retheme();
         }
         if self.pinned.synthetic {
             return;
@@ -1709,5 +1739,24 @@ impl CalmView {
             }
             Err(e) => (e.rsplit('/').next().unwrap_or(&e).to_string(), true),
         });
+    }
+}
+
+impl CalmView {
+    pub(super) fn sync_now(&self) {
+        if let Some(s) = &self.sync {
+            let _ = s.commands.send(crate::sync::Command::Refresh);
+        }
+    }
+
+    pub(super) fn toggle_theme(&mut self) {
+        let dark = !self.theme.dark;
+        self.theme_override = Some(dark);
+        self.retheme();
+    }
+
+    /// Rebuilds the theme from the current choices.
+    pub(super) fn retheme(&mut self) {
+        self.theme = theme_for(self.theme_override, self.system_dark, self.translucent, &self.calendars, &self.looks);
     }
 }

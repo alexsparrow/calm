@@ -31,6 +31,7 @@ cargo run --release
 | `Z` | Show / hide extra time zones |
 | `R` | Sync calendars now |
 | `E` | Edit the current view (layout, axes, mark, rail: off · energy · daylight) and your energy settings; saved to `views.generated.kdl` |
+| `M`, ☰ top right | Menu: secondary calendars (and any that don't fit the top bar), edit view, sync, theme, help |
 | `?` | Help · `` ` `` frame stats |
 
 The top bar shows the time here, with the time in each extra zone beneath it.

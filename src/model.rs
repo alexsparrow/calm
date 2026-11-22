@@ -19,6 +19,17 @@ pub struct Calendar {
     pub sat: f32,
     /// Default demand (0..1) of its events, for Energy and strain.
     pub demand: f32,
+    /// What the chip says, if not the name.
+    pub label: Option<String>,
+    /// Listed in the top-right menu rather than as a chip.
+    pub secondary: bool,
+}
+
+impl Calendar {
+    /// The name to show: its label, else its name.
+    pub fn display(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
 }
 
 /// Named colours, muted to sit with the theme. Calendars without a colour take these in order.
@@ -41,7 +52,7 @@ pub const PALETTE: [(&str, f32, f32); 12] = [
 const DEMO: [(&str, usize, f32); 4] = [("Work", 0, 0.55), ("Personal", 1, 0.35), ("Family", 2, 0.25), ("Focus", 3, 0.85)];
 
 pub fn demo_calendars() -> Vec<Calendar> {
-    DEMO.iter().map(|&(name, p, demand)| Calendar { name: name.into(), hue: PALETTE[p].1, sat: PALETTE[p].2, demand }).collect()
+    DEMO.iter().map(|&(name, p, demand)| Calendar { name: name.into(), hue: PALETTE[p].1, sat: PALETTE[p].2, demand, label: None, secondary: false }).collect()
 }
 
 /// A palette name or `#rrggbb` as (hue, saturation). Hex colours keep their hue; their
@@ -63,12 +74,14 @@ pub fn parse_color(s: &str) -> Option<(f32, f32)> {
 pub fn resolve_calendars(declared: Option<&[crate::viewconf::CalendarDecl]>, wanted: &[(String, Option<String>)]) -> Vec<Calendar> {
     let mut decls: Vec<crate::viewconf::CalendarDecl> = declared.map(<[_]>::to_vec).unwrap_or_default();
     for (name, color) in wanted {
-        if !decls.iter().any(|d| d.0.eq_ignore_ascii_case(name)) {
-            decls.push((name.clone(), color.clone(), None));
+        if !decls.iter().any(|d| d.name.eq_ignore_ascii_case(name)) {
+            decls.push(crate::viewconf::CalendarDecl { name: name.clone(), color: color.clone(), ..Default::default() });
         }
     }
     let mut out: Vec<Calendar> = Vec::new();
-    for (name, color, demand) in decls.into_iter().take(MAX_CALENDARS) {
+    for crate::viewconf::CalendarDecl { name, label, color, demand, secondary } in decls.into_iter().take(MAX_CALENDARS) {
+        // A declared calendar without its own colour keeps the one its source gives (Google's).
+        let color = color.or_else(|| wanted.iter().find(|(n, _)| n.eq_ignore_ascii_case(&name)).and_then(|(_, c)| c.clone()));
         let demo = DEMO.iter().find(|d| d.0.eq_ignore_ascii_case(&name));
         let (hue, sat) = match color.as_deref().and_then(parse_color) {
             Some(c) => c,
@@ -82,7 +95,7 @@ pub fn resolve_calendars(declared: Option<&[crate::viewconf::CalendarDecl]>, wan
             }
         };
         let demand = demand.or(demo.map(|d| d.2)).unwrap_or(0.4);
-        out.push(Calendar { name, hue, sat, demand });
+        out.push(Calendar { name, hue, sat, demand, label, secondary });
     }
     if out.is_empty() { demo_calendars() } else { out }
 }
