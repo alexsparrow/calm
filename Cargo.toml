@@ -7,7 +7,14 @@ edition = "2024"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
 gpui = "0.2.2"
+icalendar = { version = "0.17", features = ["chrono-tz"] }
+kdl = { version = "6", features = ["v1-fallback"] }
 libc = "0.2"
+rrule = "0.14"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "0.9"
+ureq = "3"
 
 [profile.dev]
 opt-level = 1

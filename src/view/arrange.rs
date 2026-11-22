@@ -216,7 +216,7 @@ impl Inner {
     pub fn radii(&self) -> (f32, f32) {
         let m = (self.cell[2] - self.cell[0]).min(self.cell[3] - self.cell[1]) * 0.5;
         // Big dials leave room for hour labels outside the ring.
-        let r_out = m - (m * 0.16).clamp(3., 34.);
+        let r_out = m - (m * 0.16).clamp(3., 54.);
         (r_out * 0.36, r_out)
     }
 

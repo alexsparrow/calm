@@ -17,12 +17,12 @@ use super::Hit;
 use super::arrange::{Arr, Pt, Rect};
 use crate::color::{self, ColorEnc, Measure};
 use crate::layout::{Kind, LabelMode, Target, U0, U1, V0, V1};
-use crate::model::{self, CALENDARS, Status};
-use crate::spec::{Axis, Coord, Detail, Dir, PRESETS};
+use crate::model::{self, Status};
+use crate::spec::{Axis, Coord, Detail, Dir};
 use crate::text::{self, fit, shape};
 use crate::theme::{CalColors, with_alpha};
 
-pub const MARGIN_R: f32 = 64.;
+pub const MARGIN_R: f32 = 24.;
 pub const MARGIN_T: f32 = 128.;
 /// Width of each extra time-zone column of hour labels, and height of each extra row.
 pub const ZONE_COL: f32 = 50.;
@@ -240,7 +240,7 @@ impl CalmView {
                 let (x1, y1) = inner.map(g[U1], g[V1]);
                 let mut r = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
                 // Hairline gaps between stacked blocks and side-by-side lanes.
-                let time_y = PRESETS[p].y == Axis::TimeOfDay;
+                let time_y = self.views[p].y == Axis::TimeOfDay;
                 if time_y && r[3] - r[1] > 4. {
                     r[3] -= 1.5;
                 }
@@ -251,6 +251,33 @@ impl CalmView {
                     r[0] += 1.;
                 }
                 Shape::Rect(r)
+            }
+            Kind::Pill { row, rows } if inner.coord == Coord::Polar => {
+                // A short arc at the pill's radius, as thick as its straight version would be.
+                let (r_in, r_out) = inner.radii();
+                let (r0, r1) = (inner.radius(g[V0]), inner.radius(g[V1]));
+                let (mid, h) = if (g[V1] - g[V0]).abs() < 1e-6 {
+                    (r0, ((r_out - r_in) * 0.07).clamp(3., 18.))
+                } else {
+                    let lane = (r1 - r0).abs();
+                    let rows = rows.max(1) as f32;
+                    let h = (lane / rows * 0.8).clamp(2., 20.);
+                    let gap = (h * 0.25).min(6.);
+                    let stack = rows * h + (rows - 1.) * gap;
+                    ((r0 + r1) * 0.5 - stack * 0.5 + row as f32 * (h + gap) + h * 0.5, h)
+                };
+                let (cx, cy) = inner.center();
+                let (a0, mut a1) = (inner.angle(g[U0]), inner.angle(g[U1]));
+                // At least a few pixels long, so short events stay visible.
+                a1 = a1.max(a0 + 3. / mid.max(1.));
+                let n = (((a1 - a0) * mid / 4.).ceil() as usize).clamp(2, 96);
+                let at = |r: f32, k: usize| {
+                    let t = a0 + (a1 - a0) * k as f32 / n as f32;
+                    (cx + r * t.cos(), cy + r * t.sin())
+                };
+                let mut pts: Vec<Pt> = (0..=n).map(|k| at(mid - h * 0.5, k)).collect();
+                pts.extend((0..=n).rev().map(|k| at(mid + h * 0.5, k)));
+                Shape::Strip(pts)
             }
             Kind::Pill { row, rows } => {
                 let (x0, _) = inner.map(g[U0], 0.);
@@ -283,7 +310,7 @@ impl CalmView {
         self.zone_hits.borrow_mut().clear();
         let mut hits = Vec::new();
 
-        for li in 0..PRESETS.len() {
+        for li in 0..self.views.len() {
             let a = self.layers[li].x.clamp(0., 1.);
             if a > 0.01 && !skip("decor") {
                 self.decorate(li, a, window, &mut frame);
@@ -299,7 +326,7 @@ impl CalmView {
         let mut shown: Vec<(usize, Shape)> = Vec::with_capacity(cand.len());
         let mut overflow: HashMap<i32, u32> = HashMap::new();
         let (mut quads, mut strips) = (0, 0);
-        let energy_lens = PRESETS[p].y == Axis::Demand;
+        let energy_lens = self.views[p].y == Axis::Demand;
 
         for &i in &cand {
             let m = &self.marks[i];
@@ -328,7 +355,7 @@ impl CalmView {
             let e = &self.data.events[i];
             let c = self.mark_colors(e);
             let hover = m.hover.x.clamp(0., 1.);
-            let selected = self.selected == Some(i);
+            let selected = self.selected.is_some_and(|s| self.data.events[s].group == e.group);
             let tentative = e.status == Status::Tentative;
             let mut fill = c.fill.blend(with_alpha(c.edge, 0.18 * hover));
             fill.a = alpha * if tentative { 0.75 } else { 1. };
@@ -384,7 +411,7 @@ impl CalmView {
                 if ga > 0.01 {
                     let inner = self.inner(p, arr.cell_inset(m.target.day));
                     let mid = (e.start_min + e.end_min()) * 0.5;
-                    let (x, y) = inner.map(mid / 1440., model::energy_v(model::personal_energy(mid)));
+                    let (x, y) = inner.map(mid / 1440., model::energy_v(self.data.energy_at(m.target.day, mid)));
                     if y > b[3] + 2. {
                         frame.push(BACK, Cmd::Quad { b: [x - 0.75, b[3], x + 0.75, y], r: 0., color: with_alpha(th.now, 0.55 * ga), border: None });
                     }
@@ -560,12 +587,12 @@ impl CalmView {
                         // On the open canvas: a plate keeps the label legible over gridlines and curves.
                         let plate = [lx - 4., band[1] + 1., lx + tw + 4., band[3] - 1.];
                         let mut under = th.bg;
-                        let ea = if PRESETS[p].y == Axis::Demand { self.lenses[p].grid.x.clamp(0., 1.) * lens_a } else { 0. };
+                        let ea = if self.views[p].y == Axis::Demand { self.lenses[p].grid.x.clamp(0., 1.) * lens_a } else { 0. };
                         if ea > 0.01 {
                             // Match the energy fill when the plate sits inside the curve area.
                             let inner = self.inner(p, cell);
                             let u = inner.xr.0 + (lx + tw * 0.5 - cell[0]) / (cell[2] - cell[0]) * (inner.xr.1 - inner.xr.0);
-                            let level = model::personal_energy(u * 1440.);
+                            let level = self.data.energy_at(e.day, u * 1440.);
                             let (_, cy) = inner.map(u, 1. - (1. - model::energy_v(level)) * ea);
                             if yc > cy {
                                 under = th.bg.blend(with_alpha(th.energy, if th.dark { 0.10 } else { 0.13 } * ea));
@@ -613,7 +640,7 @@ impl CalmView {
     fn decorate(&self, li: usize, a: f32, window: &Window, f: &mut Frame) {
         let th = self.theme;
         let fonts = &self.fonts;
-        let spec = &PRESETS[li];
+        let spec = &self.views[li];
         let arr = self.arr_of(li, false);
         let l = &self.lenses[li];
         let [px0, py0, pw, ph] = arr.plot;
@@ -695,6 +722,106 @@ impl CalmView {
             }
         }
 
+        // Time axes, wherever time runs: hairlines on every hour, labels on the outer edge
+        // (unless the arrangement already uses it), extra-zone rows, and the now marker.
+        let week_header = spec.facet.per_line > 1 && spec.facet.dir == Dir::Rows;
+        let step_for = |px_per_hour: f32| if px_per_hour >= 44. { 1 } else if px_per_hour >= 22. { 2 } else if px_per_hour >= 12. { 3 } else { 6 };
+        let span_h = (l.hours[1].x - l.hours[0].x) * 24.;
+        if spec.coord == Coord::Cartesian && time_x {
+            let ga = a * grid;
+            let labels = !week_header;
+            for &(d, _) in &vis {
+                let c = arr.cell_inset(d);
+                let inner = self.inner(li, c);
+                let step = step_for((c[2] - c[0]) / span_h);
+                if ga > 0.01 {
+                    for hr in 0..=24 {
+                        let (x, _) = inner.map(hr as f32 / 24., 0.);
+                        if x < c[0] - 0.5 || x > c[2] + 0.5 {
+                            continue;
+                        }
+                        hair(f, BACK, [x, c[1], x + 1., c[3]], ga * (1. - 0.4 * boxn));
+                        if labels && at_top(&c) && hr % step == 0 {
+                            label(f, TOP, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga), (x, py0 - 26.), 0.5);
+                            // Extra zones stack above, one row each.
+                            let date = self.data.date(d);
+                            for (j, tz) in zones.iter().enumerate() {
+                                let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
+                                let y = py0 - 26. - ZONE_ROW * (j + 1) as f32;
+                                label(f, TOP, text, &fonts.regular, 10.5, with_alpha(th.faint, ga * 0.75), (x, y), 0.5);
+                            }
+                        }
+                    }
+                }
+                if d == today && ga > 0.01 {
+                    let (x, _) = inner.map(now / 1440., 0.);
+                    f.push(FRONT, Cmd::Quad { b: [x - 1., c[1], x + 1., c[3]], r: 1., color: with_alpha(th.now, ga), border: None });
+                    f.push(FRONT, Cmd::Quad { b: [x - 4., c[1] - 2., x + 4., c[1] + 6.], r: 4., color: with_alpha(th.now, ga), border: None });
+                }
+            }
+            // Zone names beside their hour rows.
+            if labels && !zones.is_empty() && ga > 0.01
+                && let Some(&(d, _)) = vis.iter().find(|(_, c)| at_top(c))
+            {
+                let date = self.data.date(d);
+                zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, ga), (px0 - 12., py0 - 27.), None, ga);
+                for (j, tz) in zones.iter().enumerate() {
+                    let y = py0 - 25. - ZONE_ROW * (j + 1) as f32;
+                    zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, ga), (px0 - 12., y - 2.), Some(*tz), ga);
+                }
+            }
+        }
+        if spec.coord == Coord::Cartesian && time_y {
+            let ga = a * grid;
+            // The gutter holds weekday names when lines run across.
+            let labels = spec.facet.dir == Dir::Rows;
+            for &(d, c) in &vis {
+                if ga <= 0.01 {
+                    break;
+                }
+                let inner = self.inner(li, arr.cell_inset(d));
+                let ci = inner.cell;
+                let step = step_for((ci[3] - ci[1]) / span_h);
+                for hr in 0..=24 {
+                    let (_, y) = inner.map(0., hr as f32 / 24.);
+                    if y < ci[1] - 0.5 || y > ci[3] + 0.5 {
+                        continue;
+                    }
+                    hair(f, BACK, [ci[0], y, ci[2], y + 1.], ga * (1. - 0.5 * boxn));
+                    if labels && at_left(&c) && at_top(&c) && hr % step == 0 && hr > 0 && hr < 24 {
+                        let la = ga * (1. - boxn);
+                        label(f, LEFT, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, la), (px0 - 12., y - 7.), 1.);
+                        // The same hour in each extra zone, one column further out each.
+                        let date = self.data.date(d);
+                        for (j, tz) in zones.iter().enumerate() {
+                            let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
+                            let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
+                            label(f, LEFT, text, &fonts.regular, 10.5, with_alpha(th.faint, la * 0.75), (x, y - 7.), 1.);
+                        }
+                    }
+                }
+                if d == today {
+                    let (_, y) = inner.map(0., now / 1440.);
+                    if y > ci[1] && y < ci[3] {
+                        f.push(FRONT, Cmd::Quad { b: [ci[0], y - 1., ci[2], y + 1.], r: 1., color: with_alpha(th.now, ga), border: None });
+                        f.push(FRONT, Cmd::Quad { b: [ci[0] - 4., y - 4., ci[0] + 4., y + 4.], r: 4., color: with_alpha(th.now, ga), border: None });
+                    }
+                }
+            }
+            // Zone names heading the hour columns.
+            let za = a * grid * (1. - boxn);
+            if labels && !zones.is_empty() && za > 0.01
+                && let Some(&(d, _)) = vis.iter().find(|(_, c)| at_left(c) && at_top(c))
+            {
+                let date = self.data.date(d);
+                zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, za), (px0 - 12., py0 - 21.), None, za);
+                for (j, tz) in zones.iter().enumerate() {
+                    let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
+                    zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, za), (x, py0 - 21.), Some(*tz), za);
+                }
+            }
+        }
+
         match (spec.coord, spec.facet.per_line, spec.facet.dir) {
             (Coord::Polar, _, _) => self.decorate_dials(li, &arr, &vis, a, grid, heat, window, f),
             (_, _, Dir::Columns) => {
@@ -707,8 +834,10 @@ impl CalmView {
                         } else {
                             (date.day().to_string(), &fonts.regular, th.faint)
                         };
+                        // Above the hour rows (and their zones) when time runs across.
+                        let y = if time_x { py0 - 44. - ZONE_ROW * zones.len() as f32 } else { py0 - 22. };
                         if c[2] - c[0] > 14. || date.day() <= 7 {
-                            label(f, TOP, text, font, 11., with_alpha(color, a), ((c[0] + c[2]) * 0.5, py0 - 22.), 0.5);
+                            label(f, TOP, text, font, 11., with_alpha(color, a), ((c[0] + c[2]) * 0.5, y), 0.5);
                         }
                     }
                     if at_left(&c) {
@@ -720,32 +849,11 @@ impl CalmView {
             (_, 1, _) => {
                 // Day rows (Lanes, Energy).
                 let ga = a * grid;
-                let px_per_hour = vis.first().map_or(40., |(_, c)| (c[2] - c[0]) / ((l.hours[1].x - l.hours[0].x) * 24.));
-                let step = if px_per_hour >= 44. { 1 } else if px_per_hour >= 22. { 2 } else if px_per_hour >= 12. { 3 } else { 6 };
                 for &(d, _) in &vis {
                     let c = arr.cell_inset(d);
                     let inner = self.inner(li, c);
-                    if ga > 0.01 && time_x {
-                        for hr in 0..=24 {
-                            let (x, _) = inner.map(hr as f32 / 24., 0.);
-                            if x < c[0] - 0.5 || x > c[2] + 0.5 {
-                                continue;
-                            }
-                            hair(f, BACK, [x, c[1], x + 1., c[3]], ga * (1. - 0.4 * boxn));
-                            if at_top(&c) && hr % step == 0 {
-                                label(f, TOP, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga), (x, py0 - 26.), 0.5);
-                                // Extra zones stack above, one row each.
-                                let date = self.data.date(d);
-                                for (j, tz) in zones.iter().enumerate() {
-                                    let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
-                                    let y = py0 - 26. - ZONE_ROW * (j + 1) as f32;
-                                    label(f, TOP, text, &fonts.regular, 10.5, with_alpha(th.faint, ga * 0.75), (x, y), 0.5);
-                                }
-                            }
-                        }
-                    }
                     if ga > 0.01 && spec.y == Axis::Calendar {
-                        let n = (0..CALENDARS.len()).filter(|&k| !self.hidden[k]).count().max(1);
+                        let n = (0..self.calendars.len()).filter(|&k| !self.hidden[k]).count().max(1);
                         for k in 1..n {
                             let (_, y) = inner.map(0., k as f32 / n as f32);
                             hair(f, BACK, [c[0], y, c[2], y + 1.], ga * 1.5);
@@ -757,7 +865,7 @@ impl CalmView {
                         let curve: Vec<Pt> = (0..=k)
                             .map(|j| {
                                 let u = inner.xr.0 + (inner.xr.1 - inner.xr.0) * j as f32 / k as f32;
-                                let level = model::personal_energy(u * 1440.);
+                                let level = self.data.energy_at(d, u * 1440.);
                                 inner.map(u, 1. - (1. - model::energy_v(level)) * grid)
                             })
                             .collect();
@@ -765,22 +873,6 @@ impl CalmView {
                         pts.extend(curve.iter().rev().map(|&(x, _)| (x, c[3])));
                         f.push(BACK, Cmd::Strip { pts, color: with_alpha(th.energy, if th.dark { 0.10 } else { 0.13 } * a) });
                         f.push(BACK, Cmd::Stroke { pts: curve, closed: false, width: if boxn > 0.5 { 1.25 } else { 2. }, color: with_alpha(th.energy, 0.7 * ga) });
-                    }
-                    if d == today && ga > 0.01 {
-                        let (x, _) = inner.map(now / 1440., 0.);
-                        f.push(FRONT, Cmd::Quad { b: [x - 1., c[1], x + 1., c[3]], r: 1., color: with_alpha(th.now, ga), border: None });
-                        f.push(FRONT, Cmd::Quad { b: [x - 4., c[1] - 2., x + 4., c[1] + 6.], r: 4., color: with_alpha(th.now, ga), border: None });
-                    }
-                }
-                // Zone names beside their hour rows.
-                if !zones.is_empty() && ga > 0.01 && time_x {
-                    if let Some(&(d, _)) = vis.iter().find(|(_, c)| at_top(c)) {
-                        let date = self.data.date(d);
-                        zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, ga), (px0 - 12., py0 - 27.), None, ga);
-                        for (j, tz) in zones.iter().enumerate() {
-                            let y = py0 - 25. - ZONE_ROW * (j + 1) as f32;
-                            zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, ga), (px0 - 12., y - 2.), Some(*tz), ga);
-                        }
                     }
                 }
                 // Gutter: lanes or the demand scale for a single day.
@@ -791,20 +883,20 @@ impl CalmView {
                     let c = arr.cell_inset(d);
                     let inner = self.inner(li, c);
                     if spec.y == Axis::Calendar {
-                        let visible: Vec<usize> = (0..CALENDARS.len()).filter(|&k| !self.hidden[k]).collect();
+                        let visible: Vec<usize> = (0..self.calendars.len()).filter(|&k| !self.hidden[k]).collect();
                         let n = visible.len().max(1) as f32;
                         for (lane, &k) in visible.iter().enumerate() {
                             let (_, y0) = inner.map(0., lane as f32 / n);
                             let (_, y1) = inner.map(0., (lane as f32 + 1.) / n);
                             let y = (y0 + y1) * 0.5;
                             f.push(LEFT, Cmd::Quad { b: [16., y - 4., 24., y + 4.], r: 4., color: with_alpha(th.cals[k].dot, single), border: None });
-                            label(f, LEFT, CALENDARS[k].to_string(), &fonts.medium, 12., with_alpha(th.muted, single), (30., y - 8.), 0.);
+                            label(f, LEFT, self.calendars[k].name.clone(), &fonts.medium, 12., with_alpha(th.muted, single), (30., y - 8.), 0.);
                         }
                     } else {
                         label(f, LEFT, "Demanding".into(), &fonts.medium, 11.5, with_alpha(th.muted, single), (px0 - 14., c[1] + 4.), 1.);
                         label(f, LEFT, "Light".into(), &fonts.medium, 11.5, with_alpha(th.muted, single), (px0 - 14., c[3] - 20.), 1.);
                         let u = inner.xr.0;
-                        let (_, y) = inner.map(u, model::energy_v(model::personal_energy(u * 1440.)));
+                        let (_, y) = inner.map(u, model::energy_v(self.data.energy_at(d, u * 1440.)));
                         label(f, LEFT, "Your energy".into(), &fonts.medium, 11., with_alpha(th.energy, single), (px0 - 14., y - 8.), 1.);
                     }
                 }
@@ -812,7 +904,6 @@ impl CalmView {
             _ => {
                 // Week grid: days along lines, time of day inside each cell.
                 let single = a * (1. - boxn);
-                let ga = a * grid;
                 for &(d, c) in &vis {
                     if single > 0.01 {
                         if d.rem_euclid(7) >= 5 {
@@ -827,6 +918,12 @@ impl CalmView {
                         let dow = d.rem_euclid(7) as usize;
                         if single > 0.01 {
                             label(f, TOP, DAY_NAMES[dow].to_uppercase(), &fonts.medium, 10.5, with_alpha(if is_today { th.now } else { th.faint }, single), (xc, py0 - 56.), 0.5);
+                            // All-day events have no place on the time grid yet; at least say they exist.
+                            let all_day = self.data.all_day.get(d as usize).copied().unwrap_or(0);
+                            if all_day > 0 && c[2] - c[0] > 70. {
+                                let text = if c[2] - c[0] > 110. { format!("{all_day} all-day") } else { format!("+{all_day}") };
+                                label(f, TOP, text, &fonts.medium, 10., with_alpha(th.muted, single * 0.9), (c[2] - 6., py0 - 18.), 1.);
+                            }
                             let num = date.day().to_string();
                             if is_today {
                                 let r = 15.;
@@ -858,50 +955,6 @@ impl CalmView {
                         let text = format!("{} – {}", d0.format("%b"), d1.format("%b %Y"));
                         label(f, TOP, text, &fonts.semibold, 11.5, with_alpha(th.muted, bandness * a), (c[0] + 2., py0 - 40.), 0.);
                     }
-                    // Hours inside each cell while blocks are drawn.
-                    if ga > 0.01 && time_y {
-                        let inner = self.inner(li, arr.cell_inset(d));
-                        let ci = inner.cell;
-                        let px_per_hour = (ci[3] - ci[1]) / ((l.hours[1].x - l.hours[0].x) * 24.);
-                        let step = if px_per_hour >= 44. { 1 } else if px_per_hour >= 22. { 2 } else if px_per_hour >= 12. { 3 } else { 6 };
-                        for hr in 0..=24 {
-                            let (_, y) = inner.map(0., hr as f32 / 24.);
-                            if y < ci[1] - 0.5 || y > ci[3] + 0.5 {
-                                continue;
-                            }
-                            hair(f, BACK, [ci[0], y, ci[2], y + 1.], ga * (1. - 0.5 * boxn));
-                            if at_left(&c) && at_top(&c) && hr % step == 0 && hr > 0 && hr < 24 {
-                                let la = ga * (1. - boxn);
-                                label(f, LEFT, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, la), (px0 - 12., y - 7.), 1.);
-                                // The same hour in each extra zone, one column further out each.
-                                let date = self.data.date(d);
-                                for (j, tz) in zones.iter().enumerate() {
-                                    let text = crate::zones::axis_label(hr as f32 * 60., self.zones.delta(*tz, date));
-                                    let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
-                                    label(f, LEFT, text, &fonts.regular, 10.5, with_alpha(th.faint, la * 0.75), (x, y - 7.), 1.);
-                                }
-                            }
-                        }
-                        if d == today {
-                            let (_, y) = inner.map(0., now / 1440.);
-                            if y > ci[1] && y < ci[3] {
-                                f.push(FRONT, Cmd::Quad { b: [ci[0], y - 1., ci[2], y + 1.], r: 1., color: with_alpha(th.now, ga), border: None });
-                                f.push(FRONT, Cmd::Quad { b: [ci[0] - 4., y - 4., ci[0] + 4., y + 4.], r: 4., color: with_alpha(th.now, ga), border: None });
-                            }
-                        }
-                    }
-                }
-                // Zone names heading the hour columns.
-                let za = a * grid * (1. - boxn);
-                if !zones.is_empty() && za > 0.01 && time_y {
-                    if let Some(&(d, _)) = vis.iter().find(|(_, c)| at_left(c) && at_top(c)) {
-                        let date = self.data.date(d);
-                        zone_label(f, self.zones.primary_abbrev(date), &fonts.semibold, with_alpha(th.muted, za), (px0 - 12., py0 - 21.), None, za);
-                        for (j, tz) in zones.iter().enumerate() {
-                            let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
-                            zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, za), (x, py0 - 21.), Some(*tz), za);
-                        }
-                    }
                 }
                 let _ = pw;
                 let _ = ph;
@@ -913,11 +966,12 @@ impl CalmView {
     #[allow(clippy::too_many_arguments)]
     fn decorate_dials(&self, li: usize, arr: &Arr, vis: &[(i32, Rect)], a: f32, grid: f32, heat: f32, window: &Window, f: &mut Frame) {
         let th = self.theme;
+        let spec = &self.views[li];
         let fonts = &self.fonts;
         let today = self.data.today;
         let now = self.now_min;
         let ga = a * grid * (1. - heat);
-        let lanes = (0..CALENDARS.len()).filter(|&c| !self.hidden[c]).count().max(1);
+        let lanes = (0..self.calendars.len()).filter(|&c| !self.hidden[c]).count().max(1);
         let label = |f: &mut Frame, s: String, font: &gpui::Font, size: f32, color: Hsla, at: Pt, align: f32| {
             let line = shape(window, s.into(), font, size, color);
             let x = at.0 - f32::from(line.width) * align;
@@ -931,8 +985,10 @@ impl CalmView {
             let polar = |r: f32, t: f32| (cx + r * t.cos(), cy + r * t.sin());
             if ga > 0.01 {
                 let samples = ((r_out / 3.) as usize).clamp(24, 128);
-                for k in 0..=lanes {
-                    let r = r_in + k as f32 / lanes as f32 * (r_out - r_in);
+                // Lane rings only when the radius means calendar; otherwise just the band's edges.
+                let rings = if spec.y == Axis::Calendar { lanes } else { 1 };
+                for k in 0..=rings {
+                    let r = r_in + k as f32 / rings as f32 * (r_out - r_in);
                     let pts = (0..=samples).map(|j| polar(r, j as f32 / samples as f32 * TAU)).collect();
                     f.push(BACK, Cmd::Stroke { pts, closed: true, width: 1., color: with_alpha(th.hairline, ga * 1.6) });
                 }
@@ -943,10 +999,27 @@ impl CalmView {
                         let (r0, r1) = (r_out + 4., r_out + if major { 10. } else { 7. });
                         f.push(BACK, Cmd::Stroke { pts: vec![polar(r0, t), polar(r1, t)], closed: false, width: 1., color: with_alpha(th.faint, ga * if major { 0.8 } else { 0.4 }) });
                         if major && r_out > 140. {
-                            let (x, y) = polar(r_out + 22. + t.cos().abs() * 16., t);
-                            label(f, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga), (x, y - 7.), 0.5);
+                            // Anchored by side, so labels hug the dial and stay inside the plot.
+                            let (x, y) = polar(r_out + 16., t);
+                            label(f, hour_label(hr), &fonts.regular, 11., with_alpha(th.faint, ga), (x, y - 7. + 7. * t.sin()), 0.5 - 0.5 * t.cos());
                         }
                     }
+                }
+                if spec.y == Axis::Demand {
+                    // Personal energy as a radial area, from the curve out to the rim, as in the straight view.
+                    let k = 144;
+                    let curve: Vec<Pt> = (0..=k)
+                        .map(|j| {
+                            let u = j as f32 / k as f32;
+                            let v = 1. - (1. - model::energy_v(self.data.energy_at(d, u * 1440.))) * grid;
+                            let (r, t) = (inner.radius(v), inner.angle(u));
+                            polar(r, t)
+                        })
+                        .collect();
+                    let mut pts = curve.clone();
+                    pts.extend((0..=k).rev().map(|j| polar(r_out, inner.angle(j as f32 / k as f32))));
+                    f.push(BACK, Cmd::Strip { pts, color: with_alpha(th.energy, if th.dark { 0.10 } else { 0.13 } * a) });
+                    f.push(BACK, Cmd::Stroke { pts: curve, closed: true, width: 1.5, color: with_alpha(th.energy, 0.7 * ga) });
                 }
             }
             // Centre: weekday and date, sized to the dial.
@@ -997,7 +1070,7 @@ impl CalmView {
         };
         let t = self.enc_t.x.clamp(0., 1.);
         let encs: Vec<(ColorEnc, f32)> = if li != self.preset {
-            vec![(self.colors[li], 1.)]
+            vec![(self.views[li].color_enc(&self.values[li], self.lenses[li].mark), 1.)]
         } else if t < 1. {
             vec![(self.enc_from, 1.), (self.enc_to, t)]
         } else {
@@ -1005,7 +1078,7 @@ impl CalmView {
         };
         let norms: Vec<f32> = encs.iter().map(|(e, _)| color::norm(&self.cells, e.measure, hidden)).collect();
         let enc = encs.last().unwrap().0;
-        let span_a = if self.details[li] == Detail::DaySpan { if li == self.preset { self.detail_t.x } else { 1. } } else { 0. };
+        let span_a = if self.views[li].detail(&self.values[li], self.lenses[li].mark) == Detail::DaySpan { if li == self.preset { self.detail_t.x } else { 1. } } else { 0. };
         for d in arr.visible() {
             let b = arr.cell_inset(d);
             if !arr.on_screen(&b) {

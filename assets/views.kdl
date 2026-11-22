@@ -1,0 +1,145 @@
+// calm's built-in views. Your ~/.config/calm/calm.kdl is merged on top: a view with
+// the same name replaces one of these, `hide "Name"` removes one, and new names add views.
+// `calm config dump` prints the merged result; `calm config check` validates it.
+// Reference: docs/config.md.
+
+// Reusable parameter sets, pulled into a view with `use "name"`.
+params "colour" {
+    // Colour each mark by: its calendar, or a measure. At aggregate scale (`heat`)
+    // the measures reduce over the day; the event-level ones don't apply.
+    param "measure" label="Colour" bind="segmented" key="c" row=1 default="calendar" {
+        option "Calendar" value="calendar" when-mark-not="heat"
+        option "Duration" value="duration" when-mark-not="heat"
+        option "Demand" value="demand" when-mark-not="heat"
+        option "Strain" value="strain" when-mark-not="heat"
+        option "Hours" value="hours" when-mark="heat"
+        option "Events" value="events" when-mark="heat"
+        option "Demand" value="demand" when-mark="heat"
+        option "Strain" value="strain" when-mark="heat"
+        option "Free" value="free" when-mark="heat"
+        option "Starts" value="starts" when-mark="heat"
+        option "Ends" value="ends" when-mark="heat"
+        option "Span" value="span" when-mark="heat"
+    }
+    // By calendar: day cells split the measure by calendar and compose the parts; events
+    // take their calendar's hue, with the measure setting its strength.
+    param "split" label="By calendar" bind="toggle" key="b" row=1 default=#true when-param-not="measure=calendar"
+    param "compose" label="Compose" bind="segmented" key="v" row=2 default="blend" when-mark="heat" when-param="split=true" {
+        option "Blend" value="blend"
+        option "Stripes" value="stripes"
+        option "Stack" value="stack"
+        option "Dominant" value="dominant"
+    }
+    // First start to last end, drawn inside each aggregate cell.
+    param "span" label="Day span" bind="toggle" key="g" row=2 default=#false when-mark="heat"
+}
+
+view "Grid" {
+    // Days wrap seven to a line; lines stack as rows; rows wrap into quarter bands.
+    facet per-line=7 dir="rows" band=13
+    coord "cartesian"
+    x "lane"
+    y "time-of-day"
+    collide "split"
+    mark "block" {
+        lod below=240 mark="list"
+        lod below=60 mark="heat"
+    }
+    stops {
+        stop "Day" cells=1 align="cell"
+        stop "Week" cells=7 align="line"
+        stop "Month" cells=35 align="month"
+        stop "Quarter" cells=91 align="group"
+        stop "Year" cells=364 align="group"
+    }
+    hours from="7:00" to="21:30"
+    zones "all"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    detail day-span="$span"
+}
+
+view "Lanes" {
+    facet per-line=1 dir="rows" band=7
+    coord "cartesian"
+    x "time-of-day"
+    y "calendar"
+    collide "highlight-conflict"
+    // Pills thin out as rows get short, so detail follows height, not the time axis.
+    mark "pill" lod-extent="height" {
+        lod below=40 mark="heat"
+    }
+    stops {
+        stop "Day" cells=1 align="cell"
+        stop "Week" cells=7 align="group"
+        stop "Month" cells=28 align="group"
+    }
+    hours from="6:30" to="22:30"
+    zones "all"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    detail day-span="$span"
+}
+
+view "Energy" {
+    facet per-line=1 dir="rows" band=7
+    coord "cartesian"
+    x "time-of-day"
+    y "demand"
+    collide "overlay"
+    mark "pill" lod-extent="height" {
+        lod below=40 mark="heat"
+    }
+    stops {
+        stop "Day" cells=1 align="cell"
+        stop "Week" cells=7 align="group"
+    }
+    hours from="6:30" to="22:30"
+    zones "all"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    detail day-span="$span"
+}
+
+view "Dial" {
+    facet per-line=7 dir="rows" band=13
+    coord "polar"
+    x "time-of-day"
+    y "calendar"
+    collide "split"
+    // Blocks in polar coordinates are arcs.
+    mark "block" lod-extent="min" {
+        lod below=72 mark="heat"
+    }
+    stops {
+        stop "Day" cells=1 align="cell"
+        stop "Week" cells=7 align="line"
+        stop "Month" cells=35 align="month"
+    }
+    // A ring of labels per zone would be clutter.
+    zones "primary"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    detail day-span="$span"
+}
+
+view "Density" {
+    // The same wrap, transposed: days fill columns of seven, columns run left to right.
+    facet per-line=7 dir="columns" band=26
+    coord "cartesian"
+    mark "heat"
+    stops {
+        stop "Quarter" cells=84 align="line"
+        stop "Half" cells=182 align="group"
+        stop "Year" cells=364 align="group"
+    }
+    zones "primary"
+    use "colour" {
+        // Override defaults from the template.
+        default "measure" "hours"
+        default "split" #false
+        default "compose" "stripes"
+    }
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    detail day-span="$span"
+}

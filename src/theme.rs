@@ -28,10 +28,24 @@ pub struct Theme {
     pub cell: Hsla,
     /// Personal energy curve.
     pub energy: Hsla,
-    pub cals: [CalColors; 4],
+    /// Per calendar slot; see `with_calendars`.
+    pub cals: [CalColors; MAX_CALENDARS],
 }
 
-const HUES: [(f32, f32); 4] = [(150., 0.22), (18., 0.48), (215., 0.30), (40., 0.55)];
+use crate::model::{Calendar, MAX_CALENDARS, PALETTE};
+
+/// A calendar's fill, edge, text and dot from its hue, tuned per theme.
+fn cal_colors(hue: f32, s: f32, dark: bool) -> CalColors {
+    if dark {
+        CalColors { fill: h(hue, s * 0.7, 0.29, 1.), edge: h(hue, s + 0.05, 0.60, 1.), text: h(hue, s * 0.6, 0.88, 1.), dot: h(hue, s + 0.1, 0.62, 1.) }
+    } else {
+        CalColors { fill: h(hue, s, 0.87, 1.), edge: h(hue, s + 0.05, 0.52, 1.), text: h(hue, s * 0.9, 0.22, 1.), dot: h(hue, s + 0.1, 0.55, 1.) }
+    }
+}
+
+fn palette_cals(dark: bool) -> [CalColors; MAX_CALENDARS] {
+    std::array::from_fn(|i| cal_colors(PALETTE[i % PALETTE.len()].1, PALETTE[i % PALETTE.len()].2, dark))
+}
 
 fn h(deg: f32, s: f32, l: f32, a: f32) -> Hsla {
     hsla(deg / 360., s, l, a)
@@ -53,12 +67,7 @@ impl Theme {
             shadow: h(30., 0.30, 0.15, 0.10),
             energy: h(36., 0.62, 0.52, 1.),
             cell: h(40., 0.18, 0.915, 1.),
-            cals: HUES.map(|(hue, s)| CalColors {
-                fill: h(hue, s, 0.87, 1.),
-                edge: h(hue, s + 0.05, 0.52, 1.),
-                text: h(hue, s * 0.9, 0.22, 1.),
-                dot: h(hue, s + 0.1, 0.55, 1.),
-            }),
+            cals: palette_cals(false),
         }
     }
 
@@ -77,18 +86,23 @@ impl Theme {
             shadow: h(0., 0., 0., 0.45),
             energy: h(38., 0.62, 0.62, 1.),
             cell: h(30., 0.07, 0.155, 1.),
-            cals: HUES.map(|(hue, s)| CalColors {
-                fill: h(hue, s * 0.7, 0.29, 1.),
-                edge: h(hue, s + 0.05, 0.60, 1.),
-                text: h(hue, s * 0.6, 0.88, 1.),
-                dot: h(hue, s + 0.1, 0.62, 1.),
-            }),
+            cals: palette_cals(true),
         }
     }
 }
 
 pub fn with_alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a: c.a * a, ..c }
+}
+
+impl Theme {
+    /// Colours the calendar slots from the configured calendars.
+    pub fn with_calendars(mut self, cals: &[Calendar]) -> Self {
+        for (slot, c) in self.cals.iter_mut().zip(cals) {
+            *slot = cal_colors(c.hue, c.sat, self.dark);
+        }
+        self
+    }
 }
 
 impl Theme {

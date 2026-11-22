@@ -23,10 +23,10 @@ use gpui::{
 };
 
 use crate::anim::{GENTLE, SNAPPY, Spring, SpringCfg};
-use crate::color::{self, CellStats, ColorEnc, Compose, Measure};
+use crate::color::{self, CellStats, ColorEnc};
 use crate::layout::{self, LabelMode, Target};
-use crate::model::{self, CALENDARS, DAYS, Dataset};
-use crate::spec::{Align, Axis, Coord, Detail, Dir, Extent, Mark, PRESETS, Spec};
+use crate::model::{self, Calendar, DAYS, Dataset, MAX_CALENDARS};
+use crate::spec::{Align, Axis, Bind, Coord, Detail, Dir, Extent, Mark, Spec, Values};
 use crate::text::Fonts;
 use crate::theme::Theme;
 use arrange::{Arr, Inner, Pt};
@@ -87,6 +87,7 @@ struct MarkAnim {
 }
 
 /// Zoom, scroll and level of detail for one lens.
+#[derive(Clone)]
 struct Lens {
     /// log2 of the number of day cells visible.
     zoom: Spring,
@@ -94,11 +95,15 @@ struct Lens {
     start: Spring,
     /// Window on the inner time axis, as fractions of a day.
     hours: [Spring; 2],
+    /// The hour window this lens opens with; `F` toggles between it and the full day.
+    default_hours: (f32, f32),
     mark: Mark,
     /// Visibility of the aggregate (heat) layer and of the detailed-mark furniture.
     heat: Spring,
     grid: Spring,
     last_input: Option<Instant>,
+    /// Where the current scroll gesture began, so the snap can follow its direction.
+    gesture_from: Option<f32>,
 }
 
 #[derive(Default)]
@@ -148,8 +153,18 @@ pub struct CalmView {
     _appearance: Subscription,
     data: Dataset,
     cells: Vec<CellStats>,
-    colors: [ColorEnc; PRESETS.len()],
-    details: [Detail; PRESETS.len()],
+    /// The views, from built-ins and calm.kdl, and each one's current param values.
+    views: Vec<Spec>,
+    values: Vec<Values>,
+    /// Config files and their modification times, for hot reload; problems from the last load.
+    config_files: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>,
+    config_problems: Vec<String>,
+    /// The loaded config, for the editor (each view's KDL, which views the app has edited).
+    conf: crate::viewconf::Config,
+    editor: Spring,
+    editor_on: bool,
+    /// The editor's last outcome: (message, is_error).
+    editor_note: Option<(String, bool)>,
     detail_t: Spring,
     enc_from: ColorEnc,
     enc_to: ColorEnc,
@@ -160,13 +175,17 @@ pub struct CalmView {
     /// Marks drawn last frame.
     drawn_marks: Vec<usize>,
     preset: usize,
-    lenses: [Lens; PRESETS.len()],
-    hidden: [bool; CALENDARS.len()],
+    lenses: Vec<Lens>,
+    hidden: [bool; MAX_CALENDARS],
+    /// The calendars, in chip order; slots past the end stay hidden.
+    calendars: Vec<Calendar>,
+    /// How energy is modelled (calm.kdl's `energy`).
+    energy: crate::energy::EnergyModel,
     now_min: f32,
     dirty: bool,
     stagger: bool,
     viewport: (f32, f32),
-    layers: [Spring; PRESETS.len()],
+    layers: Vec<Spring>,
     /// Plot margins that fit what is actually drawn beside the plot.
     margin_l: Spring,
     margin_b: Spring,
@@ -174,6 +193,10 @@ pub struct CalmView {
     /// Extra time zones (a global setting) and whether they are shown.
     zones: crate::zones::Zones,
     zones_on: bool,
+    /// Live sync, when sources are configured.
+    sync: Option<Sync>,
+    /// What the command line pinned, which config reloads must not override.
+    pinned: Pinned,
     /// Zone labels drawn this frame, for hover: (rect, zone; `None` is primary).
     zone_hits: std::cell::RefCell<Vec<([f32; 4], Option<chrono_tz::Tz>)>>,
     hover_zone: Option<Option<chrono_tz::Tz>>,
@@ -185,6 +208,8 @@ pub struct CalmView {
     hud_on: bool,
     mouse: Pt,
     hits: Vec<(usize, Hit)>,
+    /// `--hover` given: ignore real pointer moves.
+    scripted_pointer: bool,
     hovered: Option<usize>,
     hover_day: Option<i32>,
     selected: Option<usize>,
@@ -215,13 +240,29 @@ impl CalmView {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
-            this.theme = theme_for(this.theme_override, window.appearance(), this.translucent);
+            this.theme = theme_for(this.theme_override, window.appearance(), this.translucent, &this.calendars);
             cx.notify();
         });
-        // Keep the now-line honest without waking every frame.
+        // Notice edits to calm.kdl (and its includes) and apply them live.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            let alive = this.update(cx, |this, cx| {
+                if stamp(&this.config_files.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>()) != this.config_files {
+                    this.reload_config();
+                    cx.notify();
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
+        // Keep the now-line and clock honest without waking every frame.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(20)).await;
+                // Wake just after each minute turns, so the clock and now-line move together.
+                let into_minute = chrono::Local::now().timestamp_subsec_millis() as u64 + 1000 * (chrono::Timelike::second(&chrono::Local::now()) as u64);
+                cx.background_executor().timer(Duration::from_millis(60_050 - into_minute.min(60_000))).await;
                 let alive = this.update(cx, |this, cx| {
                     this.now_min = model::now_minutes();
                     cx.notify();
@@ -233,55 +274,69 @@ impl CalmView {
         })
         .detach();
 
-        let data = model::generate(if opts.bench { std::env::var("CALM_MULT").ok().and_then(|m| m.parse().ok()).unwrap_or(2) } else { 1 });
-        let today = data.today;
-        let lenses = PRESETS.map(|spec| {
-            let p = spec.facet.per_line;
-            let first = spec.stops.iter().find(|s| s.cells >= p).unwrap_or(&spec.stops[0]);
-            let n = first.cells as f32;
-            let start = match spec.facet.dir {
-                // Days run down columns: put today's week a few columns in.
-                Dir::Columns => ((today.div_euclid(p) - 4).max(0) * p) as f32,
-                Dir::Rows => (today.div_euclid(p) * p) as f32,
-            };
-            let hours = match (spec.coord, spec.y, spec.x) {
-                (Coord::Polar, _, _) => (0., 1.),
-                (_, Axis::TimeOfDay, _) => (7. / 24., 21.5 / 24.),
-                (_, _, Axis::TimeOfDay) => (6.5 / 24., 22.5 / 24.),
-                _ => (0., 1.),
-            };
-            Lens {
-                zoom: Spring::new(n.log2()),
-                start: Spring::new(start),
-                hours: [Spring::new(hours.0), Spring::new(hours.1)],
-                mark: spec.mark,
-                heat: Spring::new(if spec.mark == Mark::Heat { 1. } else { 0. }),
-                grid: Spring::new(if spec.mark == Mark::Heat { 0. } else { 1. }),
-                last_input: None,
+        // Live mode: configured sources, shown from the offline cache at once and kept
+        // fresh by the background sync. `--demo` (and benchmarks) use synthetic data.
+        let (config, diags) = crate::viewconf::load();
+        let calendars = calendars_for(&config.settings, opts.demo || opts.bench);
+        let names: Vec<String> = calendars.iter().map(|c| c.name.clone()).collect();
+        let (sources, problems) = crate::sync::load_sources(config.settings.sources.as_deref(), &names);
+        for p in &problems {
+            eprintln!("calm: {p}");
+        }
+        let live = !opts.demo && !opts.bench && !sources.is_empty();
+        let data = if live {
+            load_live(&sources, &calendars)
+        } else {
+            model::generate(if opts.bench { std::env::var("CALM_MULT").ok().and_then(|m| m.parse().ok()).unwrap_or(2) } else { 1 })
+        };
+        let energy = config.settings.energy.clone().unwrap_or_default();
+        let mut data = data;
+        data.set_energy(&energy);
+        let sync = live.then(|| start_sync(&sources, &problems));
+        // Check for sync news once a second; cheap, and the UI only redraws on change.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            if this.update(cx, |this, cx| this.poll_sync(cx)).is_err() {
+                break;
             }
-        });
-        let mut layers = [Spring::new(0.); PRESETS.len()];
+        })
+        .detach();
+        let today = data.today;
+        let config_problems: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
+        for d in &config_problems {
+            eprintln!("calm: {d}");
+        }
+        let views = config.views.clone();
+        let lenses: Vec<Lens> = views.iter().map(|spec| new_lens(spec, today)).collect();
+        let mut layers = vec![Spring::new(0.); views.len()];
         layers[0] = Spring::new(1.);
         let mut this = Self {
             focus,
             fonts: Fonts::new(),
-            theme: theme_for(None, window.appearance(), opts.opacity),
+            theme: theme_for(None, window.appearance(), opts.opacity, &calendars),
             theme_override: None,
             translucent: opts.opacity,
             _appearance: appearance,
             cells: Vec::new(),
-            colors: PRESETS.map(|p| p.color),
-            details: PRESETS.map(|p| p.detail),
+            values: views.iter().map(Spec::defaults).collect(),
+            config_files: watch_list(&config.files),
+            config_problems,
+            conf: config.clone(),
+            editor: Spring::new(0.),
+            editor_on: opts.edit,
+            editor_note: None,
             detail_t: Spring::new(0.),
-            enc_from: PRESETS[0].color,
-            enc_to: PRESETS[0].color,
+            enc_from: views[0].color_enc(&views[0].defaults(), views[0].mark),
+            enc_to: views[0].color_enc(&views[0].defaults(), views[0].mark),
+            views,
             enc_t: Spring::new(1.),
             marks: Vec::new(),
             flipping: Vec::new(),
             drawn_marks: Vec::new(),
             preset: 0,
             lenses,
-            hidden: [false; CALENDARS.len()],
+            hidden: std::array::from_fn(|c| c >= calendars.len()),
+            calendars,
             now_min: model::now_minutes(),
             dirty: true,
             stagger: false,
@@ -290,8 +345,10 @@ impl CalmView {
             margin_l: Spring::new(GUTTER_MIN),
             margin_b: Spring::new(CONTROLS_ONE_ROW),
             margin_t: Spring::new(scene::MARGIN_T),
-            zones: crate::zones::Zones::load(opts.zones.as_deref()),
+            zones: crate::zones::Zones::load(opts.zones.as_deref(), config.settings.zones.as_ref()),
             zones_on: true,
+            sync,
+            pinned: Pinned { zones: opts.zones.is_some(), theme: opts.dark.is_some(), synthetic: opts.demo || opts.bench },
             zone_hits: Default::default(),
             hover_zone: None,
             switcher: Spring::new(0.),
@@ -321,17 +378,25 @@ impl CalmView {
             }),
             still: opts.still,
             pending: (opts.hover, opts.select),
+            scripted_pointer: opts.hover.is_some(),
             stable_frames: 0,
             last_trace: String::new(),
             data,
+            energy,
         };
         this.restat();
-        if let Some(dark) = opts.dark {
+        // The command line wins over calm.kdl's `theme`.
+        let dark = opts.dark.or(match config.settings.theme.as_deref() {
+            Some("dark") => Some(true),
+            Some("light") => Some(false),
+            _ => None,
+        });
+        if let Some(dark) = dark {
             this.theme_override = Some(dark);
-            this.theme = theme_for(Some(dark), window.appearance(), this.translucent);
+            this.theme = theme_for(Some(dark), window.appearance(), this.translucent, &this.calendars);
         }
         if let Some(lens) = opts.lens {
-            this.set_preset(lens.min(PRESETS.len() - 1));
+            this.set_preset(lens.min(this.views.len() - 1));
         }
         if opts.offset != 0 {
             let l = &mut this.lenses[this.preset];
@@ -348,32 +413,31 @@ impl CalmView {
             }
         }
         if opts.span {
-            this.details[this.preset] = Detail::DaySpan;
+            this.set_param("span", "true");
             this.detail_t = Spring::new(1.);
         }
         if let Some(spec) = &opts.color {
-            let mut enc = this.color();
+            // `measure[:scale|:calendar|:compose]`; a compose implies by calendar.
             let mut parts = spec.split(':');
-            let measure = parts.next().unwrap_or("");
-            if measure == "calendar" {
-                enc.by_calendar = true;
-            } else if let Some(m) = Measure::ALL.into_iter().find(|m| m.label().to_lowercase().starts_with(measure)) {
-                enc.measure = m;
-                enc.by_calendar = false;
+            this.set_param("measure", parts.next().unwrap_or(""));
+            match parts.next() {
+                Some("scale") => this.set_param("split", "false"),
+                Some("calendar") => this.set_param("split", "true"),
+                Some(c) => {
+                    this.set_param("compose", c);
+                    this.set_param("split", "true");
+                }
+                None => {}
             }
-            if let Some(c) = parts.next().and_then(|c| Compose::ALL.into_iter().find(|x| x.label().to_lowercase() == c)) {
-                enc.compose = c;
-                enc.by_calendar = true;
-            }
-            this.set_color(enc);
+            let enc = this.color();
             this.enc_from = enc;
             this.enc_to = enc;
         }
         this
     }
 
-    fn spec(&self) -> &'static Spec {
-        &PRESETS[self.preset]
+    fn spec(&self) -> &Spec {
+        &self.views[self.preset]
     }
 
     fn lens(&self) -> &Lens {
@@ -383,7 +447,7 @@ impl CalmView {
     /// The arrangement for lens `p`, live or (with `target`) where it is heading.
     fn arr_of(&self, p: usize, target: bool) -> Arr {
         let l = &self.lenses[p];
-        let spec = &PRESETS[p];
+        let spec = &self.views[p];
         let (x, y, w, h) = self.plot();
         let (z, s) = if target { (l.zoom.target, l.start.target) } else { (l.zoom.x, l.start.x) };
         Arr { plot: [x, y, w, h], facet: spec.facet, n: z.exp2(), start: s, days: DAYS, boxed: spec.x == Axis::None }
@@ -432,14 +496,15 @@ impl CalmView {
 
     /// Inner coordinates of a cell in lens `p`.
     fn inner(&self, p: usize, mut cell: [f32; 4]) -> Inner {
-        let spec = &PRESETS[p];
+        let spec = &self.views[p];
         if spec.coord == Coord::Cartesian && spec.x != Axis::None {
             // Boxed cells keep a header strip for their date label.
             let b = self.arr_of(p, false).boxness();
             cell[1] = (cell[1] + 17. * b).min(cell[3] - 4.);
         }
         let l = &self.lenses[p];
-        let hours = (l.hours[0].x, l.hours[1].x);
+        // A dial is a clock face: always the whole day, whatever the hour window.
+        let hours = if spec.coord == Coord::Polar { (0., 1.) } else { (l.hours[0].x, l.hours[1].x) };
         let (xr, yr) = match (spec.x, spec.y) {
             (Axis::TimeOfDay, _) => (hours, (0., 1.)),
             (_, Axis::TimeOfDay) => ((0., 1.), hours),
@@ -457,7 +522,8 @@ impl CalmView {
         self.cells = color::cell_stats(&self.data.events, &self.hidden, DAYS as usize);
     }
 
-    fn set_data(&mut self, data: Dataset) {
+    fn set_data(&mut self, mut data: Dataset) {
+        data.set_energy(&self.energy);
         self.data = data;
         self.marks.clear();
         self.flipping.clear();
@@ -482,11 +548,35 @@ impl CalmView {
     }
 
     fn color(&self) -> ColorEnc {
-        self.colors[self.preset]
+        self.spec().color_enc(&self.values[self.preset], self.lens().mark)
     }
 
-    fn set_color(&mut self, enc: ColorEnc) {
-        self.colors[self.preset] = enc;
+    fn detail(&self) -> Detail {
+        self.spec().detail(&self.values[self.preset], self.lens().mark)
+    }
+
+    fn set_param(&mut self, name: &str, value: &str) {
+        if self.spec().param(name).is_some() {
+            self.values[self.preset].insert(name.to_string(), value.to_string());
+        }
+    }
+
+    /// A param's key: toggles flip, segmented params cycle through the options that apply now.
+    fn param_key(&mut self, key: &str) -> bool {
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let Some(p) = spec.params.iter().find(|p| p.key.as_deref() == Some(key) && spec.active(p, values, mark)) else { return false };
+        let current = spec.value(&p.name, values, mark);
+        let next = match p.bind {
+            Bind::Toggle => if current == "true" { "false".to_string() } else { "true".to_string() },
+            Bind::Segmented => {
+                let opts: Vec<&str> = spec.options(p, values, mark).map(|o| o.value.as_str()).collect();
+                let i = opts.iter().position(|v| *v == current).map_or(0, |i| (i + 1) % opts.len().max(1));
+                opts.get(i).map(|v| v.to_string()).unwrap_or(current)
+            }
+        };
+        let name = p.name.clone();
+        self.set_param(&name, &next);
+        true
     }
 
     /// Start a crossfade whenever the effective encoding changes, whether
@@ -498,31 +588,6 @@ impl CalmView {
             self.enc_to = enc;
             self.enc_t = Spring { target: 1., ..Spring::new(0.) };
         }
-    }
-
-    fn cycle_measure(&mut self) {
-        let mut enc = self.color();
-        let aggregate = self.aggregate();
-        let options: Vec<Measure> = Measure::ALL.into_iter().filter(|m| aggregate || m.per_event()).collect();
-        let i = options.iter().position(|&m| m == enc.measure).map_or(0, |i| (i + 1) % options.len());
-        enc.measure = options[i];
-        if !aggregate {
-            enc.by_calendar = false;
-        }
-        self.set_color(enc);
-    }
-
-    fn toggle_detail(&mut self) {
-        let d = &mut self.details[self.preset];
-        *d = if *d == Detail::DaySpan { Detail::None } else { Detail::DaySpan };
-    }
-
-    fn cycle_compose(&mut self) {
-        let mut enc = self.color();
-        let i = Compose::ALL.iter().position(|&c| c == enc.compose).unwrap_or(0);
-        enc.compose = Compose::ALL[(i + 1) % Compose::ALL.len()];
-        enc.by_calendar = true;
-        self.set_color(enc);
     }
 
     fn toggle_calendar(&mut self, c: usize) {
@@ -546,7 +611,7 @@ impl CalmView {
     /// (cells, start) for stop `i`, aligned per the stop's rule around `center`.
     fn aligned(&self, i: usize, center: f32) -> (f32, f32) {
         let spec = self.spec();
-        let stop = spec.stops[i];
+        let stop = spec.stops[i].clone();
         let p = spec.facet.per_line as f32;
         let n = stop.cells as f32;
         let center = center.clamp(0., DAYS as f32 - 1.);
@@ -611,7 +676,7 @@ impl CalmView {
     /// Previous/next by the current stop's unit.
     fn pan(&mut self, dir: i32) {
         let i = self.nearest_stop();
-        let stop = self.spec().stops[i];
+        let stop = self.spec().stops[i].clone();
         let shift = match stop.align {
             Align::Month => 30.5,
             _ => stop.cells as f32,
@@ -630,6 +695,9 @@ impl CalmView {
         let arr = self.arr_of(self.preset, true);
         let l = &mut self.lenses[self.preset];
         let n = l.zoom.target.exp2();
+        if l.last_input.is_none() {
+            l.gesture_from = Some(l.start.target);
+        }
         l.start.target = (l.start.target + px * arr.cells_per_px()).clamp(0., (DAYS as f32 - n).max(0.));
         l.last_input = Some(Instant::now());
     }
@@ -643,6 +711,30 @@ impl CalmView {
         let lo = (pivot - span * anchor + shift).clamp(0., 1. - span);
         l.hours[0].target = lo;
         l.hours[1].target = lo + span;
+    }
+
+    /// Between the lens's default hours and the whole day.
+    fn toggle_full_day(&mut self) {
+        let l = &mut self.lenses[self.preset];
+        let full = l.hours[1].target - l.hours[0].target > 0.999;
+        let (lo, hi) = if full { l.default_hours } else { (0., 1.) };
+        l.hours[0].target = lo;
+        l.hours[1].target = hi;
+    }
+
+    /// Whether `pos` is on the hour labels: the left gutter for a vertical time axis,
+    /// the band above the plot for a horizontal one.
+    fn on_hour_axis(&self, (x, y): Pt) -> bool {
+        let spec = self.spec();
+        if spec.coord != Coord::Cartesian || self.lens().mark != spec.mark || self.arr().lines() > 1.05 {
+            return false;
+        }
+        let (px, py, w, h) = self.plot();
+        match (spec.x, spec.y) {
+            (_, Axis::TimeOfDay) => x < px && y >= py && y <= py + h,
+            (Axis::TimeOfDay, _) => y < py && y > py - 40. - scene::ZONE_ROW * self.shown_zones().len() as f32 && x >= px && x <= px + w,
+            _ => false,
+        }
     }
 
     /// Whether wheel scrolling should move the hour window rather than the days.
@@ -662,7 +754,14 @@ impl CalmView {
             return;
         }
         let i = self.nearest_stop();
-        self.zoom_to_stop(i, None);
+        // A deliberate swipe (over a tenth of a page) carries on to the next page in its
+        // direction instead of springing back to where it started.
+        let l = &mut self.lenses[self.preset];
+        let n = l.zoom.target.exp2();
+        let moved = l.gesture_from.take().map_or(0., |from| l.start.target - from);
+        let bias = if moved.abs() > 0.1 * n { moved.signum() * 0.45 * n } else { 0. };
+        let center = self.center_target() + bias;
+        self.zoom_to_stop(i, Some(center));
     }
 
     /// Recompute the level of detail from the live cell size.
@@ -675,7 +774,9 @@ impl CalmView {
         let c = arr.cell((arr.start + arr.n * 0.5) as i32);
         let (w, h) = (c[2] - c[0], c[3] - c[1]);
         let extent = match spec.lod_extent {
-            Extent::Height => h,
+            Extent::Time if spec.x == Axis::TimeOfDay && spec.coord == crate::spec::Coord::Cartesian => w,
+            Extent::Time | Extent::Height => h,
+            Extent::Width => w,
             Extent::Min => w.min(h),
         };
         let current = self.lens().mark;
@@ -687,7 +788,7 @@ impl CalmView {
     }
 
     fn relayout(&mut self) {
-        let spec = *self.spec();
+        let spec = self.spec().clone();
         let mark = self.lens().mark;
         let arr = self.arr();
         let targets = layout::solve(&self.data.events, &spec, mark, &self.hidden);
@@ -771,6 +872,13 @@ impl CalmView {
         // changes (see `relayout`), so cost tracks what is visible, not the dataset.
         let mut live = self.drawn_marks.clone();
         live.extend_from_slice(&self.flipping);
+        // Hovering lights every piece of the event, e.g. both sides of midnight.
+        let group = self.hovered.map(|i| self.data.events[i].group);
+        let lit: Vec<usize> = match group {
+            Some(g) => self.group_of(g),
+            None => Vec::new(),
+        };
+        live.extend_from_slice(&lit);
         live.extend(self.hovered);
         live.sort_unstable();
         live.dedup();
@@ -785,11 +893,11 @@ impl CalmView {
             }
             moving |= m.label.step(dt, SNAPPY);
             moving |= m.placed.step(dt, SNAPPY);
-            m.hover.target = if self.hovered == Some(i) { 1. } else { 0. };
+            m.hover.target = if lit.contains(&i) { 1. } else { 0. };
             moving |= m.hover.step(dt, SNAPPY);
         }
         for (p, l) in self.lenses.iter_mut().enumerate() {
-            let base = PRESETS[p].mark;
+            let base = self.views[p].mark;
             l.heat.target = if l.mark == Mark::Heat { 1. } else { 0. };
             l.grid.target = if l.mark == base { 1. } else { 0. };
             let [h0, h1] = &mut l.hours;
@@ -808,17 +916,19 @@ impl CalmView {
         let hovering = self.hovered.is_some() || self.hover_day.is_some() || self.hover_zone.is_some();
         self.tooltip.target = if hovering && self.selected.is_none() { 1. } else { 0. };
         self.help.target = if self.help_on { 1. } else { 0. };
-        self.detail_t.target = if self.details[self.preset] == Detail::DaySpan { 1. } else { 0. };
+        self.editor.target = if self.editor_on { 1. } else { 0. };
+        self.detail_t.target = if self.detail() == Detail::DaySpan { 1. } else { 0. };
         self.margin_l.target = self.gutter_target();
         // A row of hour labels per extra zone above a horizontal time axis.
         let rows = if self.spec().x == Axis::TimeOfDay { self.shown_zones().len() } else { 0 };
         self.margin_t.target = scene::MARGIN_T + scene::ZONE_ROW * rows as f32;
-        self.margin_b.target = if self.aggregate() { CONTROLS_TWO_ROWS } else { CONTROLS_ONE_ROW };
+        self.margin_b.target = CONTROLS_ONE_ROW + (CONTROLS_TWO_ROWS - CONTROLS_ONE_ROW) * self.param_rows().saturating_sub(1) as f32;
         for (s, cfg) in [
             (&mut self.switcher, SNAPPY),
             (&mut self.drawer, GENTLE),
             (&mut self.tooltip, SNAPPY),
             (&mut self.help, SNAPPY),
+            (&mut self.editor, SNAPPY),
             (&mut self.enc_t, GENTLE),
             (&mut self.detail_t, GENTLE),
             (&mut self.margin_l, GENTLE),
@@ -851,16 +961,26 @@ impl CalmView {
 
     fn over_chrome(&self, (x, y): Pt) -> bool {
         let drawer = self.selected.is_some() && x > self.viewport.0 - chrome::DRAWER_W - 24.;
-        let slider = x > self.viewport.0 - scene::MARGIN_R + 4.;
-        drawer || slider || y < chrome::TOPBAR_H || y > self.viewport.1 - self.margin_b.x + 6.
+        drawer || y < chrome::TOPBAR_H || y > self.viewport.1 - self.margin_b.x + 6.
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
+        // Keys declared by the view's params come first.
+        let plain = !(k.modifiers.control || k.modifiers.alt || k.modifiers.platform);
+        if plain && self.param_key(&k.key) {
+            cx.notify();
+            return;
+        }
         match k.key.as_str() {
-            n @ ("1" | "2" | "3" | "4" | "5") => self.set_preset(n.parse::<usize>().unwrap() - 1),
-            "tab" if k.modifiers.shift => self.set_preset((self.preset + PRESETS.len() - 1) % PRESETS.len()),
-            "tab" => self.set_preset((self.preset + 1) % PRESETS.len()),
+            n @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
+                let i = n.parse::<usize>().unwrap() - 1;
+                if i < self.views.len() {
+                    self.set_preset(i);
+                }
+            }
+            "tab" if k.modifiers.shift => self.set_preset((self.preset + self.views.len() - 1) % self.views.len()),
+            "tab" => self.set_preset((self.preset + 1) % self.views.len()),
             "left" | "h" => self.pan(-1),
             "right" | "l" => self.pan(1),
             "up" | "k" if self.scrolls_hours() => self.scroll_hours(-1. / 24., 1., 0.5),
@@ -870,19 +990,21 @@ impl CalmView {
             "-" => self.zoom_step(1),
             "=" | "+" => self.zoom_step(-1),
             "t" => self.go_today(),
-            "c" => self.cycle_measure(),
-            "g" => self.toggle_detail(),
+            "f" => self.toggle_full_day(),
             "z" => self.zones_on = !self.zones_on,
-            "v" => self.cycle_compose(),
-            "b" => {
-                let mut enc = self.color();
-                enc.by_calendar = !enc.by_calendar;
-                self.set_color(enc);
+            "e" => {
+                self.editor_on = !self.editor_on;
+                self.editor_note = None;
+            }
+            "r" => {
+                if let Some(s) = &self.sync {
+                    let _ = s.commands.send(crate::sync::Command::Refresh);
+                }
             }
             "d" => {
                 let dark = !self.theme.dark;
                 self.theme_override = Some(dark);
-                self.theme = theme_for(Some(dark), WindowAppearance::Light, self.translucent);
+                self.theme = theme_for(Some(dark), WindowAppearance::Light, self.translucent, &self.calendars);
             }
             "?" => self.help_on = !self.help_on,
             "/" if k.modifiers.shift => self.help_on = !self.help_on,
@@ -894,6 +1016,8 @@ impl CalmView {
             "escape" => {
                 if self.help_on {
                     self.help_on = false;
+                } else if self.editor_on {
+                    self.editor_on = false;
                 } else {
                     self.selected = None;
                 }
@@ -904,6 +1028,10 @@ impl CalmView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        // `--hover` holds the pointer still for screenshots; the real one would reset it.
+        if self.scripted_pointer {
+            return;
+        }
         let pos: Pt = (ev.position.x.into(), ev.position.y.into());
         self.mouse = pos;
         let zone = self.zone_hits.borrow().iter().find(|(r, _)| pos.0 >= r[0] && pos.0 <= r[2] && pos.1 >= r[1] && pos.1 <= r[3]).map(|(_, z)| *z);
@@ -929,6 +1057,11 @@ impl CalmView {
         if self.over_chrome(pos) {
             return;
         }
+        if self.on_hour_axis(pos) {
+            self.toggle_full_day();
+            cx.notify();
+            return;
+        }
         if let Some(i) = self.hit(pos) {
             self.selected = Some(i);
         } else if let Some(day) = self.overview_day(pos) {
@@ -950,6 +1083,9 @@ impl CalmView {
             ScrollDelta::Pixels(p) => (p.x.into(), p.y.into()),
             ScrollDelta::Lines(l) => (l.x * 48., l.y * 48.),
         };
+        // Touchpad swipes are never perfectly straight: follow the dominant axis only,
+        // so a vertical swipe doesn't also nudge the days (and then snap back).
+        let (dx, dy) = if dy.abs() >= dx.abs() { (0., dy) } else { (dx, 0.) };
         if ev.modifiers.control || ev.modifiers.platform {
             // Semantic zoom around the pointer.
             self.zoom_by(-dy * 0.006, Some(self.mouse));
@@ -1030,9 +1166,9 @@ impl CalmView {
     }
 }
 
-fn theme_for(override_dark: Option<bool>, appearance: WindowAppearance, translucent: Option<f32>) -> Theme {
+fn theme_for(override_dark: Option<bool>, appearance: WindowAppearance, translucent: Option<f32>, calendars: &[Calendar]) -> Theme {
     let dark = override_dark.unwrap_or(matches!(appearance, WindowAppearance::Dark | WindowAppearance::VibrantDark));
-    let theme = if dark { Theme::dark() } else { Theme::light() };
+    let theme = (if dark { Theme::dark() } else { Theme::light() }).with_calendars(calendars);
     match translucent {
         Some(opacity) => theme.translucent(opacity),
         None => theme,
@@ -1142,6 +1278,7 @@ impl Render for CalmView {
             .when(!scene::skip("chrome"), |d| d.child(self.top_bar(cx)).child(self.zoom_slider(cx)).child(self.switcher(cx)))
             .children(self.tooltip_card())
             .children(self.drawer_card(cx))
+            .children(self.editor_panel(cx))
             .children(self.help_card())
             .children(self.hud())
     }
@@ -1151,6 +1288,8 @@ impl Render for CalmView {
 pub struct Options {
     pub bench: bool,
     pub still: bool,
+    /// Open with the view editor showing (screenshots).
+    pub edit: bool,
     pub cycle: bool,
     /// Background opacity; `None` is an opaque window.
     pub opacity: Option<f32>,
@@ -1167,6 +1306,8 @@ pub struct Options {
     pub span: bool,
     /// Extra time zones, overriding the config file: `America/New_York,Europe/London`.
     pub zones: Option<String>,
+    /// Synthetic data even when sources are configured.
+    pub demo: bool,
 }
 
 impl Options {
@@ -1177,6 +1318,7 @@ impl Options {
             match a.as_str() {
                 "--bench" => o.bench = true,
                 "--still" => o.still = true,
+                "--edit" => o.edit = true,
                 "--cycle" => o.cycle = true,
                 // Like a translucent terminal: a mostly solid background, no blur.
                 "--translucent" => o.opacity = o.opacity.or(Some(0.8)),
@@ -1194,6 +1336,7 @@ impl Options {
                 "--color" => o.color = args.next(),
                 "--span" => o.span = true,
                 "--zones" => o.zones = args.next(),
+                "--demo" => o.demo = true,
                 _ => eprintln!("calm: ignoring unknown argument {a}"),
             }
         }
@@ -1204,4 +1347,304 @@ impl Options {
 fn parse_pt(s: &str) -> Option<Pt> {
     let (x, y) = s.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// Live-sync state held by the view.
+struct Sync {
+    rx: std::sync::mpsc::Receiver<crate::sync::Update>,
+    commands: std::sync::mpsc::Sender<crate::sync::Command>,
+    sources: Vec<crate::sync::Source>,
+    states: Vec<crate::sync::store::SourceState>,
+    problems: Vec<String>,
+}
+
+/// Reads every configured source's occurrences from the offline cache.
+fn load_live(sources: &[crate::sync::Source], calendars: &[Calendar]) -> Dataset {
+    let span = model::generate_span();
+    let stored = crate::sync::store::Store::open(&crate::sync::db_path())
+        .and_then(|s| s.occurrences(span.0, span.1))
+        .unwrap_or_default();
+    model::from_occurrences(&stored, |name| sources.iter().find(|s| s.name == name).map_or(0, |s| s.calendar), calendars)
+}
+
+impl CalmView {
+    /// Drains sync news: reload data when a source changed, refresh status otherwise.
+    fn poll_sync(&mut self, cx: &mut Context<Self>) {
+        let Some(sync) = &mut self.sync else { return };
+        let (mut changed, mut any) = (false, false);
+        while let Ok(update) = sync.rx.try_recv() {
+            any = true;
+            changed |= matches!(update, crate::sync::Update::Changed);
+        }
+        if !any {
+            // Ages in the status line ("3 min ago") still move.
+            return;
+        }
+        sync.states = crate::sync::store::Store::open(&crate::sync::db_path()).and_then(|s| s.states()).unwrap_or_default();
+        if changed {
+            let data = load_live(&sync.sources, &self.calendars);
+            self.set_data(data);
+        }
+        cx.notify();
+    }
+
+    /// One line for the top bar: how fresh the calendars are.
+    fn sync_line(&self) -> Option<(String, bool)> {
+        let sync = self.sync.as_ref()?;
+        if let Some(p) = sync.problems.first() {
+            return Some((p.clone(), true));
+        }
+        let now = chrono::Utc::now().timestamp();
+        let ago = |t: i64| match (now - t).max(0) / 60 {
+            0 => "just now".to_string(),
+            m if m < 60 => format!("{m} min ago"),
+            m => format!("{} h ago", m / 60),
+        };
+        let states: Vec<_> = sync.sources.iter().map(|s| sync.states.iter().find(|st| st.name == s.name)).collect();
+        if let Some(st) = states.iter().flatten().find(|st| st.last_error.is_some() && st.failures > 0) {
+            let when = st.last_ok_at.map(|t| format!(" · showing cache from {}", ago(t))).unwrap_or_default();
+            return Some((format!("{}: {}{when}", st.name, st.last_error.as_deref().unwrap_or("sync failed")), true));
+        }
+        if states.iter().any(|s| s.and_then(|s| s.last_ok_at).is_none()) {
+            return Some(("Syncing…".into(), false));
+        }
+        let oldest = states.iter().flatten().filter_map(|s| s.last_ok_at).min()?;
+        Some((format!("Synced {}", ago(oldest)), false))
+    }
+}
+
+/// Fresh zoom state for a view: its first stop of at least a line, around today.
+fn new_lens(spec: &Spec, today: i32) -> Lens {
+    let p = spec.facet.per_line;
+    let first = spec.stops.iter().find(|s| s.cells >= p).unwrap_or(&spec.stops[0]);
+    let n = first.cells as f32;
+    let start = match spec.facet.dir {
+        // Days run down columns: with many weeks in view, put today's a few columns in
+        // (a third of the way, at most four); with one, start on it.
+        Dir::Columns => {
+            let back = ((first.cells / p.max(1)) / 3).min(4);
+            ((today.div_euclid(p) - back).max(0) * p) as f32
+        }
+        Dir::Rows => (today.div_euclid(p) * p) as f32,
+    };
+    let hours = spec.hours;
+    Lens {
+        zoom: Spring::new(n.log2()),
+        start: Spring::new(start),
+        hours: [Spring::new(hours.0), Spring::new(hours.1)],
+        default_hours: hours,
+        mark: spec.mark,
+        heat: Spring::new(if spec.mark == Mark::Heat { 1. } else { 0. }),
+        grid: Spring::new(if spec.mark == Mark::Heat { 0. } else { 1. }),
+        last_input: None,
+        gesture_from: None,
+    }
+}
+
+/// Modification times of config files, to notice edits.
+fn stamp(files: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> {
+    files.iter().map(|f| (f.clone(), std::fs::metadata(f).and_then(|m| m.modified()).ok())).collect()
+}
+
+/// Files to watch: everything the config read, plus calm.kdl itself even if absent (so creating it works).
+fn watch_list(files: &[std::path::PathBuf]) -> Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> {
+    let mut files = files.to_vec();
+    if let Some(p) = crate::viewconf::user_path()
+        && !files.contains(&p)
+    {
+        files.push(p);
+    }
+    stamp(&files)
+}
+
+impl CalmView {
+    /// Re-reads the view config. Invalid configs keep the current views and report why;
+    /// valid ones apply, keeping each surviving view's zoom and param choices by name.
+    fn reload_config(&mut self) {
+        let (config, diags) = crate::viewconf::load();
+        self.config_files = watch_list(&config.files);
+        self.config_problems = diags.iter().map(|d| d.to_string()).collect();
+        if !diags.is_empty() || config.views.is_empty() {
+            return;
+        }
+        self.apply_settings(&config.settings);
+        let today = self.data.today;
+        let current = self.views[self.preset].name.clone();
+        let (mut lenses, mut values, mut layers) = (Vec::new(), Vec::new(), Vec::new());
+        for v in &config.views {
+            match self.views.iter().position(|o| o.name == v.name) {
+                Some(i) => {
+                    let mut lens = self.lenses[i].clone();
+                    lens.mark = v.mark;
+                    lens.default_hours = v.hours;
+                    lenses.push(lens);
+                    let mut vals = v.defaults();
+                    for (k, val) in &self.values[i] {
+                        if vals.contains_key(k) {
+                            vals.insert(k.clone(), val.clone());
+                        }
+                    }
+                    values.push(vals);
+                    layers.push(self.layers[i]);
+                }
+                None => {
+                    lenses.push(new_lens(v, today));
+                    values.push(v.defaults());
+                    layers.push(Spring::new(0.));
+                }
+            }
+        }
+        self.preset = config.views.iter().position(|v| v.name == current).unwrap_or(0);
+        for (i, l) in layers.iter_mut().enumerate() {
+            l.target = if i == self.preset { 1. } else { 0. };
+        }
+        self.switcher = Spring::new(self.preset as f32);
+        self.conf = config.clone();
+        self.views = config.views;
+        (self.lenses, self.values, self.layers) = (lenses, values, layers);
+        self.dirty = true;
+        self.stagger = true;
+    }
+
+    /// The top bar's status: config problems first, then sync.
+    fn status_line(&self) -> Option<(String, bool)> {
+        match self.config_problems.first() {
+            Some(p) => {
+                // `path:line:col: message` → `file:line:col: message`, kept short for the top bar.
+                let short = p.rsplit('/').next().unwrap_or(p);
+                let short: String = if short.chars().count() > 72 { short.chars().take(71).chain(std::iter::once('…')).collect() } else { short.to_string() };
+                Some((short, true))
+            }
+            None => self.sync_line(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Pinned {
+    zones: bool,
+    theme: bool,
+    /// `--demo` or `--bench`: never sync.
+    synthetic: bool,
+}
+
+/// Starts the background sync engine for `sources`.
+fn start_sync(sources: &[crate::sync::Source], problems: &[String]) -> Sync {
+    let (rx, commands) = crate::sync::start(sources.to_vec());
+    let states = crate::sync::store::Store::open(&crate::sync::db_path()).and_then(|s| s.states()).unwrap_or_default();
+    Sync { rx, commands, sources: sources.to_vec(), states, problems: problems.to_vec() }
+}
+
+impl CalmView {
+    /// Applies non-view settings from a freshly loaded config: zones, theme and sources.
+    fn apply_settings(&mut self, settings: &crate::viewconf::Settings) {
+        let energy = settings.energy.clone().unwrap_or_default();
+        if energy != self.energy {
+            self.energy = energy;
+            self.data.set_energy(&self.energy);
+            self.restat();
+            self.dirty = true;
+        }
+        if !self.pinned.zones {
+            self.zones = crate::zones::Zones::load(None, settings.zones.as_ref());
+        }
+        if !self.pinned.theme {
+            let dark = match settings.theme.as_deref() {
+                Some("dark") => Some(true),
+                Some("light") => Some(false),
+                _ => None,
+            };
+            if dark != self.theme_override {
+                self.theme_override = dark;
+                self.theme = theme_for(dark, WindowAppearance::Light, self.translucent, &self.calendars);
+            }
+        }
+        if self.pinned.synthetic {
+            return;
+        }
+        let calendars = calendars_for(settings, false);
+        let recolour = calendars != self.calendars;
+        if recolour {
+            // New calendars: fresh chips (all shown) and colours; events re-map below.
+            self.hidden = std::array::from_fn(|c| c >= calendars.len());
+            self.theme = self.theme.with_calendars(&calendars);
+            self.calendars = calendars;
+        }
+        let names: Vec<String> = self.calendars.iter().map(|c| c.name.clone()).collect();
+        let (sources, problems) = crate::sync::load_sources(settings.sources.as_deref(), &names);
+        let key = |s: &[crate::sync::Source]| s.iter().map(|x| format!("{}|{}", x.name, x.config_hash)).collect::<Vec<_>>();
+        let current = self.sync.as_ref().map(|s| key(&s.sources)).unwrap_or_default();
+        if recolour || key(&sources) != current {
+            // Dropping the old engine's command channel stops its thread.
+            self.sync = (!sources.is_empty()).then(|| start_sync(&sources, &problems));
+            let data = if sources.is_empty() { model::generate(1) } else { load_live(&sources, &self.calendars) };
+            self.set_data(data);
+        } else if let Some(s) = &mut self.sync {
+            s.problems = problems;
+        }
+    }
+}
+
+impl CalmView {
+    fn edit_channel(&mut self, child: &str, prop: Option<&str>, value: &str) {
+        let name = self.spec().name.clone();
+        self.editor_note = Some(match crate::viewconf::edit_view(&self.conf, &name, child, prop, value) {
+            Ok(()) => {
+                self.reload_config();
+                ("Saved".into(), false)
+            }
+            Err(e) => (e.rsplit('/').next().unwrap_or(&e).to_string(), true),
+        });
+    }
+
+    fn duplicate_current(&mut self) {
+        let name = self.spec().name.clone();
+        self.editor_note = Some(match crate::viewconf::duplicate_view(&self.conf, &name) {
+            Ok(copy) => {
+                self.reload_config();
+                if let Some(i) = self.views.iter().position(|v| v.name == copy) {
+                    self.set_preset(i);
+                }
+                (format!("Made “{copy}”"), false)
+            }
+            Err(e) => (e, true),
+        });
+    }
+
+    fn reset_current(&mut self) {
+        let name = self.spec().name.clone();
+        self.editor_note = Some(match crate::viewconf::reset_view(&name) {
+            Ok(()) => {
+                self.reload_config();
+                (format!("“{name}” reset"), false)
+            }
+            Err(e) => (e, true),
+        });
+    }
+}
+
+impl CalmView {
+    /// Indices of every piece of event group `g`, in day order. Pieces of one event
+    /// are a day apart, so look near the hovered one rather than scanning everything.
+    pub(super) fn group_of(&self, g: u32) -> Vec<usize> {
+        let events = &self.data.events;
+        let Some(i) = self.hovered.filter(|&i| events[i].group == g).or_else(|| events.iter().position(|e| e.group == g)) else {
+            return Vec::new();
+        };
+        let day = events[i].day;
+        // Events are sorted by day; a multi-day event spans at most a few weeks.
+        let lo = events.partition_point(|e| e.day < day - 31);
+        let hi = events.partition_point(|e| e.day <= day + 31);
+        (lo..hi).filter(|&k| events[k].group == g).collect()
+    }
+}
+
+/// The calendar list: the demo's for synthetic data or when nothing syncs, else as
+/// declared in calm.kdl, else derived from the sources.
+fn calendars_for(settings: &crate::viewconf::Settings, synthetic: bool) -> Vec<Calendar> {
+    let wanted = crate::sync::wanted_calendars(settings.sources.as_deref());
+    if synthetic || wanted.is_empty() {
+        return model::demo_calendars();
+    }
+    model::resolve_calendars(settings.calendars.as_deref(), &wanted)
 }

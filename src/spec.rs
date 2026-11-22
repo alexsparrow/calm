@@ -9,11 +9,16 @@
 //! * `lod` — semantic zoom: which mark to draw as cells shrink.
 //! * `stops` — snap points for the zoom, with how each aligns to the calendar.
 //! * `color`, `detail` — what drives fill, and glyphs nested in aggregate cells.
+//! * `params` — named values a view exposes for choosing in the UI. Channels
+//!   refer to them as `$name`; how they are offered (segmented, toggle, a key)
+//!   is a hint, and where they appear is up to the app.
 //!
-//! Zoom is not a channel: it is how many cells are visible. Everything else
-//! is derived, so zooming a lens out from a week to a year is continuous.
+//! Zoom is not a channel: it is how many cells are visible. Views are data,
+//! parsed from KDL (see `viewconf` and `docs/config.md`).
 
-use crate::color::{ColorEnc, Compose, Measure};
+use std::collections::HashMap;
+
+use crate::color::{ColorEnc, Compose, Measure, Palette};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Coord {
@@ -61,8 +66,6 @@ pub enum Mark {
     Block,
     /// Constant-height pills on a time axis.
     Pill,
-    /// Annular sectors (polar blocks).
-    Arc,
     /// One line per event, stacked in start order: a month-view cell.
     List,
     /// The cell itself, coloured by the colour channel.
@@ -72,7 +75,11 @@ pub enum Mark {
 /// Which extent of a cell drives level of detail.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Extent {
+    /// Along the time axis: width when time runs across, else height. Thresholds then
+    /// mean the same thing however the view is turned.
+    Time,
     Height,
+    Width,
     Min,
 }
 
@@ -94,11 +101,19 @@ pub enum Align {
     Group,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Stop {
-    pub name: &'static str,
+    pub name: String,
     pub cells: i32,
     pub align: Align,
+}
+
+/// Secondary encoding nested inside an aggregate cell.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Detail {
+    None,
+    /// A bar from the day's first start to its last end on a mini 6am–midnight axis.
+    DaySpan,
 }
 
 /// Time-zone labelling of the time axis.
@@ -110,125 +125,100 @@ pub enum ZoneAxes {
     Primary,
 }
 
-/// Secondary encoding nested inside an aggregate cell.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Detail {
-    None,
-    /// A bar from the day's first start to its last end on a mini 6am–midnight axis.
-    DaySpan,
+/// A channel value: written literally, or `$name` to take a param's value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ref {
+    Lit(String),
+    Param(String),
 }
 
-#[derive(Clone, Copy, Debug)]
+impl Ref {
+    pub fn parse(s: &str) -> Self {
+        match s.strip_prefix('$') {
+            Some(name) => Ref::Param(name.to_string()),
+            None => Ref::Lit(s.to_string()),
+        }
+    }
+
+}
+
+#[derive(Clone, Debug)]
+pub struct ColorRef {
+    /// `calendar`, or a measure (`hours`, `events`, `demand`, `strain`, `free`,
+    /// `starts`, `ends`, `span`; `duration` is hours per event).
+    pub measure: Ref,
+    /// Facet the measure by calendar (aggregates).
+    pub split: Ref,
+    /// `blend`, `stripes`, `stack` or `dominant`.
+    pub compose: Ref,
+    /// Where hue comes from: `scale` (the measure's own ramp) or `calendar` (each
+    /// calendar's colour, with the measure setting its strength). A toggle param
+    /// reads `true` as `calendar`.
+    pub palette: Ref,
+}
+
+/// How a param is offered in the UI.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Bind {
+    Segmented,
+    Toggle,
+}
+
+/// When a param or option applies.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cond {
+    Mark(Mark),
+    NotMark(Mark),
+    /// `name=value`
+    Param(String, String),
+    /// `name!=value`, written `when-param-not="name=value"`
+    NotParam(String, String),
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamOption {
+    pub label: String,
+    pub value: String,
+    pub when: Vec<Cond>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub name: String,
+    pub label: Option<String>,
+    pub bind: Bind,
+    pub key: Option<String>,
+    /// Control row, counted up from the lens switcher (1 is nearest).
+    pub row: u8,
+    pub default: String,
+    /// Segmented choices; toggles are `true`/`false`.
+    pub options: Vec<ParamOption>,
+    pub when: Vec<Cond>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Spec {
-    pub name: &'static str,
+    pub name: String,
     pub facet: Facet,
     pub coord: Coord,
     pub x: Axis,
     pub y: Axis,
     pub collide: Collide,
     pub mark: Mark,
-    pub lod: &'static [Lod],
+    pub lod: Vec<Lod>,
     pub lod_extent: Extent,
-    pub stops: &'static [Stop],
-    /// Default colour encoding; the view keeps per-lens overrides.
-    pub color: ColorEnc,
-    pub detail: Detail,
-    /// Which time zones label the time-of-day axis. The zones themselves are a
-    /// global setting; a view can only narrow them to the primary one.
+    pub stops: Vec<Stop>,
+    /// The inner time window the view opens with, as fractions of a day.
+    pub hours: (f32, f32),
     pub zones: ZoneAxes,
+    pub params: Vec<Param>,
+    pub color: ColorRef,
+    /// Whether aggregate cells carry the day-span glyph.
+    pub day_span: Ref,
 }
 
-const DAY: Stop = Stop { name: "Day", cells: 1, align: Align::Cell };
-const WEEK: Stop = Stop { name: "Week", cells: 7, align: Align::Line };
-const MONTH: Stop = Stop { name: "Month", cells: 35, align: Align::Month };
-/// A week of day-rows, Monday first.
-const WEEK_ROWS: Stop = Stop { name: "Week", cells: 7, align: Align::Group };
-const QUARTER: Stop = Stop { name: "Quarter", cells: 91, align: Align::Group };
-const YEAR: Stop = Stop { name: "Year", cells: 364, align: Align::Group };
-
-const BLEND: ColorEnc = ColorEnc { measure: Measure::Hours, by_calendar: true, compose: Compose::Blend };
-
-pub const PRESETS: [Spec; 5] = [
-    Spec {
-        name: "Week",
-        facet: Facet { per_line: 7, dir: Dir::Rows, band: 13 },
-        coord: Coord::Cartesian,
-        x: Axis::Lane,
-        y: Axis::TimeOfDay,
-        collide: Collide::Split,
-        mark: Mark::Block,
-        lod: &[Lod { below: 240., mark: Mark::List }, Lod { below: 60., mark: Mark::Heat }],
-        lod_extent: Extent::Height,
-        stops: &[DAY, WEEK, MONTH, QUARTER, YEAR],
-        color: BLEND,
-        detail: Detail::None,
-        zones: ZoneAxes::All,
-    },
-    Spec {
-        name: "Lanes",
-        facet: Facet { per_line: 1, dir: Dir::Rows, band: 7 },
-        coord: Coord::Cartesian,
-        x: Axis::TimeOfDay,
-        y: Axis::Calendar,
-        collide: Collide::HighlightConflict,
-        mark: Mark::Pill,
-        lod: &[Lod { below: 40., mark: Mark::Heat }],
-        lod_extent: Extent::Height,
-        stops: &[DAY, WEEK_ROWS, Stop { name: "Month", cells: 28, align: Align::Group }],
-        color: BLEND,
-        detail: Detail::None,
-        zones: ZoneAxes::All,
-    },
-    Spec {
-        name: "Energy",
-        facet: Facet { per_line: 1, dir: Dir::Rows, band: 7 },
-        coord: Coord::Cartesian,
-        x: Axis::TimeOfDay,
-        y: Axis::Demand,
-        collide: Collide::Overlay,
-        mark: Mark::Pill,
-        lod: &[Lod { below: 40., mark: Mark::Heat }],
-        lod_extent: Extent::Height,
-        stops: &[DAY, WEEK_ROWS],
-        color: BLEND,
-        detail: Detail::None,
-        zones: ZoneAxes::All,
-    },
-    Spec {
-        name: "Dial",
-        facet: Facet { per_line: 7, dir: Dir::Rows, band: 13 },
-        coord: Coord::Polar,
-        x: Axis::TimeOfDay,
-        y: Axis::Calendar,
-        collide: Collide::Split,
-        mark: Mark::Arc,
-        lod: &[Lod { below: 72., mark: Mark::Heat }],
-        lod_extent: Extent::Min,
-        stops: &[DAY, WEEK, MONTH],
-        color: BLEND,
-        detail: Detail::None,
-        zones: ZoneAxes::Primary,
-    },
-    Spec {
-        name: "Quarter",
-        facet: Facet { per_line: 7, dir: Dir::Columns, band: 26 },
-        coord: Coord::Cartesian,
-        x: Axis::None,
-        y: Axis::None,
-        collide: Collide::Overlay,
-        mark: Mark::Heat,
-        lod: &[],
-        lod_extent: Extent::Height,
-        stops: &[
-            Stop { name: "Quarter", cells: 84, align: Align::Line },
-            Stop { name: "Half", cells: 182, align: Align::Group },
-            YEAR,
-        ],
-        color: ColorEnc { measure: Measure::Hours, by_calendar: false, compose: Compose::Stripes },
-        detail: Detail::None,
-        zones: ZoneAxes::Primary,
-    },
-];
+/// Current param values for one view, by name.
+pub type Values = HashMap<String, String>;
 
 impl Spec {
     /// The mark to draw at a given cell extent, with hysteresis around the
@@ -236,7 +226,7 @@ impl Spec {
     pub fn lod_mark(&self, extent: f32, current: Mark) -> Mark {
         let hyst = 1.08;
         let mut mark = self.mark;
-        for rule in self.lod {
+        for rule in &self.lod {
             let threshold = if current == mark { rule.below / hyst } else { rule.below * hyst };
             if extent < threshold {
                 mark = rule.mark;
@@ -245,6 +235,97 @@ impl Spec {
             }
         }
         mark
+    }
+
+    pub fn defaults(&self) -> Values {
+        self.params.iter().map(|p| (p.name.clone(), p.default.clone())).collect()
+    }
+
+    pub fn param(&self, name: &str) -> Option<&Param> {
+        self.params.iter().find(|p| p.name == name)
+    }
+
+    fn holds(&self, conds: &[Cond], values: &Values, mark: Mark) -> bool {
+        conds.iter().all(|c| match c {
+            Cond::Mark(m) => *m == mark,
+            Cond::NotMark(m) => *m != mark,
+            Cond::Param(name, want) => self.value(name, values, mark) == *want,
+            Cond::NotParam(name, want) => self.value(name, values, mark) != *want,
+        })
+    }
+
+    /// Option conditions test raw values, which can't cycle back into `value`.
+    fn holds_raw(&self, conds: &[Cond], values: &Values, mark: Mark) -> bool {
+        conds.iter().all(|c| match c {
+            Cond::Mark(m) => *m == mark,
+            Cond::NotMark(m) => *m != mark,
+            Cond::Param(name, want) => values.get(name).is_some_and(|v| v == want),
+            Cond::NotParam(name, want) => values.get(name).is_none_or(|v| v != want),
+        })
+    }
+
+    /// Whether a param is offered at all right now.
+    pub fn active(&self, p: &Param, values: &Values, mark: Mark) -> bool {
+        self.holds(&p.when, values, mark)
+    }
+
+    /// A param's options that apply right now.
+    pub fn options<'a>(&'a self, p: &'a Param, values: &'a Values, mark: Mark) -> impl Iterator<Item = &'a ParamOption> + 'a {
+        p.options.iter().filter(move |o| self.holds_raw(&o.when, values, mark))
+    }
+
+    /// A param's effective value: off (toggles) or its default (choices) when
+    /// inactive, and for choices
+    /// that don't apply right now (say, after zooming to aggregates) the first
+    /// that does. The stored value survives, so zooming back restores it.
+    pub fn value(&self, name: &str, values: &Values, mark: Mark) -> String {
+        let Some(p) = self.param(name) else { return String::new() };
+        // Param conditions may reference other params; guard against self-reference.
+        let deps_ok = p.when.iter().all(|c| match c {
+            Cond::Param(n, want) if n != name => self.value(n, values, mark) == *want,
+            Cond::NotParam(n, want) if n != name => self.value(n, values, mark) != *want,
+            Cond::Param(..) | Cond::NotParam(..) => true,
+            Cond::Mark(m) => *m == mark,
+            Cond::NotMark(m) => *m != mark,
+        });
+        if !deps_ok {
+            // A toggle that isn't offered right now is off; a choice falls back to its default.
+            return if p.bind == Bind::Toggle { "false".into() } else { p.default.clone() };
+        }
+        let v = values.get(name).cloned().unwrap_or_else(|| p.default.clone());
+        if p.bind == Bind::Toggle || p.options.is_empty() {
+            return v;
+        }
+        let mut opts = p.options.iter().filter(|o| self.holds_raw(&o.when, values, mark));
+        let first = opts.clone().next().map(|o| o.value.clone());
+        if opts.any(|o| o.value == v) { v } else { first.unwrap_or(v) }
+    }
+
+    fn resolve(&self, r: &Ref, values: &Values, mark: Mark) -> String {
+        match r {
+            Ref::Lit(s) => s.clone(),
+            Ref::Param(name) => self.value(name, values, mark),
+        }
+    }
+
+    /// The colour encoding these values select.
+    pub fn color_enc(&self, values: &Values, mark: Mark) -> ColorEnc {
+        let measure = self.resolve(&self.color.measure, values, mark);
+        let split = self.resolve(&self.color.split, values, mark) == "true";
+        let compose = Compose::from_name(&self.resolve(&self.color.compose, values, mark)).unwrap_or(Compose::Blend);
+        let palette = match self.resolve(&self.color.palette, values, mark).as_str() {
+            "calendar" | "true" => Palette::Calendar,
+            _ => Palette::Scale,
+        };
+        match measure.as_str() {
+            "calendar" => ColorEnc { measure: Measure::Hours, by_calendar: true, compose, palette: Palette::Calendar },
+            // Splitting is for aggregates; events take calendar colour through `palette`.
+            m => ColorEnc { measure: Measure::from_name(m).unwrap_or(Measure::Hours), by_calendar: split && mark == Mark::Heat, compose, palette },
+        }
+    }
+
+    pub fn detail(&self, values: &Values, mark: Mark) -> Detail {
+        if self.resolve(&self.day_span, values, mark) == "true" { Detail::DaySpan } else { Detail::None }
     }
 
     /// Plain-language description of the grammar, for the caption.
@@ -263,9 +344,9 @@ impl Spec {
         };
         let coord = if self.coord == Coord::Polar { "polar " } else { "" };
         let mark = match mark {
+            Mark::Block if self.coord == Coord::Polar => "arcs",
             Mark::Block => "blocks",
             Mark::Pill => "pills",
-            Mark::Arc => "arcs",
             Mark::List => "list",
             Mark::Heat => "heat",
         };

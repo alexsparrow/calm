@@ -11,9 +11,9 @@ use gpui::{
 
 use super::scene::{DAY_NAMES, fmt_range};
 use super::{CalmView, Stats};
-use crate::color::{self, ColorEnc, Compose, Measure};
-use crate::model::{CALENDARS, Status};
-use crate::spec::{Detail, PRESETS};
+use crate::color::{self, Measure};
+use crate::model::Status;
+use crate::spec::{Bind, Detail};
 use crate::theme::with_alpha;
 
 pub const TOPBAR_H: f32 = 64.;
@@ -88,9 +88,10 @@ impl CalmView {
     pub(super) fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let th = self.theme;
         let (title, subtitle) = self.title();
+        let sync_line = self.status_line();
         let key = hash(&title) ^ hash(&subtitle);
         let compact = self.viewport.0 < 940.;
-        let chips = (0..CALENDARS.len()).map(|c| {
+        let chips = (0..self.calendars.len()).map(|c| {
             let hidden = self.hidden[c];
             let dot = th.cals[c].dot;
             div()
@@ -120,7 +121,7 @@ impl CalmView {
                         .when(!hidden, |d| d.bg(dot))
                         .when(hidden, |d| d.border_1().border_color(th.faint)),
                 )
-                .when(!compact, |d| d.child(CALENDARS[c]))
+                .when(!compact, |d| d.child(self.calendars[c].name.clone()))
         });
         let can_pan = true;
 
@@ -140,7 +141,17 @@ impl CalmView {
                     .flex_col()
                     .gap(px(1.))
                     .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(title))
-                    .child(div().text_size(px(12.5)).text_color(th.faint).child(subtitle))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .text_size(px(12.5))
+                            .text_color(th.faint)
+                            .child(subtitle)
+                            .children(sync_line.map(|(text, problem)| {
+                                div().text_color(if problem { th.now } else { th.faint }).child(format!("· {text}"))
+                            })),
+                    )
                     .with_animation(
                         ("title", key),
                         Animation::new(Duration::from_millis(380)).with_easing(ease_out_quint()),
@@ -152,6 +163,8 @@ impl CalmView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .child(self.clock(self.viewport.0 < 640.))
+                    .child(div().w(px(10.)))
                     .children(chips)
                     .child(div().w(px(14.)))
                     .when(can_pan, |d| {
@@ -171,7 +184,7 @@ impl CalmView {
             )
     }
 
-    fn chip(&self, id: impl Into<gpui::ElementId>, label: &'static str, active: bool) -> Stateful<Div> {
+    fn chip(&self, id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, active: bool) -> Stateful<Div> {
         let th = self.theme;
         div()
             .id(id)
@@ -186,7 +199,7 @@ impl CalmView {
             .when(active, |d| d.bg(with_alpha(th.ink, if th.dark { 0.12 } else { 0.07 })))
             .cursor_pointer()
             .hover(move |s| s.text_color(th.ink))
-            .child(label)
+            .child(label.into())
     }
 
     fn bar(&self) -> Div {
@@ -203,55 +216,41 @@ impl CalmView {
             .shadow_sm()
     }
 
-    /// The colour channel of the grammar, editable per lens.
-    fn color_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Legend for a continuous colour scale; calendar colours are legended by the top-bar chips.
+    fn legend(&self) -> Option<Div> {
         let th = self.theme;
         let enc = self.color();
         let aggregate = self.aggregate();
-        let caption = |s: &'static str| div().px(px(8.)).text_size(px(11.)).text_color(th.faint).child(s);
-
-        let mut row = self.bar().child(caption("Colour"));
-        if aggregate {
-            for (i, m) in Measure::ALL.into_iter().enumerate() {
-                row = row.child(self.chip(("measure", i), m.label(), enc.measure == m).on_click(on_color(cx, move |e| e.measure = m)));
-            }
-            row = row.child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border));
-            let facetable = enc.measure.facetable();
-            row = row.child(
-                self.chip("by-cal", "By calendar", enc.faceted())
-                    .when(!facetable, |d| d.opacity(0.4))
-                    .on_click(on_color(cx, |e| e.by_calendar = !e.by_calendar)),
-            );
-        } else {
-            row = row.child(self.chip("m-cal", "Calendar", enc.by_calendar).on_click(on_color(cx, |e| e.by_calendar = true)));
-            for (i, (m, label)) in [(Measure::Hours, "Duration"), (Measure::Demand, "Demand"), (Measure::Strain, "Strain")].into_iter().enumerate() {
-                let active = !enc.by_calendar && enc.measure == m;
-                row = row.child(self.chip(("m-ev", i), label, active).on_click(on_color(cx, move |e| {
-                    e.by_calendar = false;
-                    e.measure = m;
-                })));
-            }
+        // Events in calendar hues: one pale-to-full ramp per calendar.
+        let hued = !aggregate && !enc.by_calendar && enc.palette == color::Palette::Calendar && enc.measure.per_event();
+        if !hued && (enc.faceted() || !(aggregate || enc.measure.per_event())) {
+            return None;
         }
-        // Legend for continuous scales; calendar colours are legended by the top-bar chips.
-        let legend = (!enc.faceted() && (aggregate || enc.measure.per_event())).then(|| {
-            let (lo, hi) = enc.measure.legend();
-            let swatch = if enc.measure.diverging_per_event() && !aggregate {
-                div()
-                    .flex()
-                    .w(px(56.))
-                    .h(px(8.))
-                    .rounded_full()
-                    .overflow_hidden()
-                    .child(div().flex_1().h_full().bg(gpui::linear_gradient(90., gpui::linear_color_stop(color::diverging(&th, -color::EASY), 0.), gpui::linear_color_stop(th.cell, 1.))))
-                    .child(div().flex_1().h_full().bg(gpui::linear_gradient(90., gpui::linear_color_stop(th.cell, 0.), gpui::linear_color_stop(color::diverging(&th, 1.), 1.))))
-            } else {
-                let m = enc.measure;
-                div().w(px(56.)).h(px(8.)).rounded_full().bg(gpui::linear_gradient(
-                    90.,
-                    gpui::linear_color_stop(color::ramp(&th, m, 0.), 0.),
-                    gpui::linear_color_stop(color::ramp(&th, m, 1.), 1.),
-                ))
-            };
+        let (lo, hi) = enc.measure.legend();
+        let lo = if hued && enc.measure.diverging_per_event() { "easy · neutral" } else { lo };
+        let swatch = if hued {
+            div().flex().flex_col().w(px(56.)).h(px(14.)).rounded(px(3.)).overflow_hidden().children((0..self.calendars.len()).filter(|&c| !self.hidden[c]).map(|c| {
+                let dot = th.cals[c].dot;
+                div().flex_1().w_full().bg(gpui::linear_gradient(90., gpui::linear_color_stop(color::mix(th.cell, dot, 0.1), 0.), gpui::linear_color_stop(dot, 1.)))
+            }))
+        } else if enc.measure.diverging_per_event() && !aggregate {
+            div()
+                .flex()
+                .w(px(56.))
+                .h(px(8.))
+                .rounded_full()
+                .overflow_hidden()
+                .child(div().flex_1().h_full().bg(gpui::linear_gradient(90., gpui::linear_color_stop(color::diverging(&th, -color::EASY), 0.), gpui::linear_color_stop(th.cell, 1.))))
+                .child(div().flex_1().h_full().bg(gpui::linear_gradient(90., gpui::linear_color_stop(th.cell, 0.), gpui::linear_color_stop(color::diverging(&th, 1.), 1.))))
+        } else {
+            let m = enc.measure;
+            div().w(px(56.)).h(px(8.)).rounded_full().bg(gpui::linear_gradient(
+                90.,
+                gpui::linear_color_stop(color::ramp(&th, m, 0.), 0.),
+                gpui::linear_color_stop(color::ramp(&th, m, 1.), 1.),
+            ))
+        };
+        Some(
             div()
                 .flex()
                 .items_center()
@@ -261,42 +260,71 @@ impl CalmView {
                 .text_color(th.faint)
                 .child(lo)
                 .child(swatch.border_1().border_color(th.border))
-                .child(hi)
-        });
+                .child(hi),
+        )
+    }
 
-        let (legend_top, legend_row) = if aggregate { (legend, None) } else { (None, legend) };
-        // Aggregates get a second row: how facets compose (or the legend), and nested glyphs.
-        let extra = aggregate.then(|| {
-            let mut top = self.bar();
-            if enc.faceted() {
-                top = top.child(caption("Compose"));
-                for (i, c) in Compose::ALL.into_iter().enumerate() {
-                    top = top.child(self.chip(("compose", i), c.label(), enc.compose == c).on_click(on_color(cx, move |e| e.compose = c)));
-                }
-            } else {
-                top = top.children(legend_top);
+    /// Number of control rows the current view shows (for the bottom margin).
+    pub(super) fn param_rows(&self) -> usize {
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let mut rows: Vec<u8> = spec.params.iter().filter(|p| spec.active(p, values, mark)).map(|p| p.row).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        rows.len()
+    }
+
+    /// Controls generated from the view's declared params: a bar per row (row 1
+    /// nearest the lens switcher), segmented params as chip groups, toggles as
+    /// single chips, and the colour legend on the top-most row.
+    fn params_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let th = self.theme;
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let caption = |s: String| div().px(px(8.)).text_size(px(11.)).text_color(th.faint).child(s);
+        let divider = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border);
+        let mut rows: std::collections::BTreeMap<u8, Div> = std::collections::BTreeMap::new();
+        for p in spec.params.iter().filter(|p| spec.active(p, values, mark)) {
+            let fresh = !rows.contains_key(&p.row);
+            let mut row = rows.remove(&p.row).unwrap_or_else(|| self.bar());
+            if !fresh {
+                row = row.child(divider());
             }
-            let span_on = self.details[self.preset] == Detail::DaySpan;
-            top.child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(th.border))
-                .child(self.chip("day-span", "Day span", span_on).on_click(cx.listener(|this, _, _, cx| {
-                    this.toggle_detail();
-                    cx.notify();
-                })))
-                .with_animation(
-                    ("extra-in", enc.faceted() as usize),
-                    Animation::new(Duration::from_millis(320)).with_easing(ease_out_quint()),
-                    |el, t| el.opacity(t).mb(px(-6. * (1. - t))),
-                )
-        });
-        let row = row.children(legend_row);
-
-        div().flex().flex_col().items_center().gap(px(6.)).children(extra).child(row)
+            let current = spec.value(&p.name, values, mark);
+            match p.bind {
+                Bind::Segmented => {
+                    if let Some(l) = &p.label {
+                        row = row.child(caption(l.clone()));
+                    }
+                    for (i, o) in spec.options(p, values, mark).enumerate() {
+                        let (name, value) = (p.name.clone(), o.value.clone());
+                        let id = gpui::ElementId::NamedInteger(p.name.clone().into(), i as u64);
+                        row = row.child(self.chip(id, o.label.clone(), o.value == current).on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_param(&name, &value);
+                            cx.notify();
+                        })));
+                    }
+                }
+                Bind::Toggle => {
+                    let on = current == "true";
+                    let name = p.name.clone();
+                    let label = p.label.clone().unwrap_or_else(|| p.name.clone());
+                    row = row.child(self.chip(gpui::ElementId::Name(p.name.clone().into()), label, on).on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_param(&name, if on { "false" } else { "true" });
+                        cx.notify();
+                    })));
+                }
+            }
+            rows.insert(p.row, row);
+        }
+        if let (Some(legend), Some((_, top))) = (self.legend(), rows.iter_mut().next_back()) {
+            *top = std::mem::replace(top, div()).child(divider()).child(legend);
+        }
+        div().flex().flex_col().items_center().gap(px(6.)).children(rows.into_values().rev())
     }
 
     pub(super) fn switcher(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let th = self.theme;
-        let color_bar = self.color_bar(cx);
-        let items = PRESETS.iter().enumerate().map(|(i, p)| {
+        let color_bar = self.params_bar(cx);
+        let items = self.views.iter().enumerate().map(|(i, p)| {
             let active = i == self.preset;
             div()
                 .id(("lens", i))
@@ -315,7 +343,7 @@ impl CalmView {
                     this.set_preset(i);
                     cx.notify();
                 }))
-                .child(p.name)
+                .child(p.name.clone())
         });
         div()
             .absolute()
@@ -364,7 +392,20 @@ impl CalmView {
         } else if let Some(i) = self.hovered {
             let e = &self.data.events[i];
             let date = self.data.date(e.day);
-            let when = format!("{} {} · {}", DAY_NAMES[e.day.rem_euclid(7) as usize], date.day(), fmt_range(e.start_min, e.end_min()));
+            let pieces = self.group_of(e.group);
+            let when = match (pieces.first(), pieces.last()) {
+                // Crosses midnight: from the first piece's start to the last piece's end.
+                (Some(&a), Some(&b)) if a != b => {
+                    let (a, b) = (&self.data.events[a], &self.data.events[b]);
+                    let at = |d: i32, min: f32| {
+                        let date = self.data.date(d);
+                        let t = chrono::NaiveTime::from_num_seconds_from_midnight_opt((min.round() as u32 % 1440) * 60, 0).unwrap_or_default();
+                        format!("{} {} {}", DAY_NAMES[d.rem_euclid(7) as usize], date.day(), t.format("%-I:%M %P"))
+                    };
+                    format!("{} → {}", at(a.day, a.start_min), at(b.day, b.end_min()))
+                }
+                _ => format!("{} {} · {}", DAY_NAMES[e.day.rem_euclid(7) as usize], date.day(), fmt_range(e.start_min, e.end_min())),
+            };
             let strained = self.preset == 2 && crate::model::strain(e) >= crate::model::STRAIN;
             let line2 = if strained { Some("Above your usual energy at this hour".into()) } else { e.location.clone() };
             (e.title.clone(), when, line2, th.cals[e.calendar].dot)
@@ -373,7 +414,7 @@ impl CalmView {
             let s = self.cells.get(day as usize)?;
             let date = self.data.date(day);
             let title = date.format("%A %-d %B").to_string().into();
-            let visible: Vec<usize> = (0..CALENDARS.len()).filter(|&c| !self.hidden[c]).collect();
+            let visible: Vec<usize> = (0..self.calendars.len()).filter(|&c| !self.hidden[c]).collect();
             let hours: f32 = visible.iter().map(|&c| s.hours[c]).sum();
             let count: u32 = visible.iter().map(|&c| s.count[c]).sum();
             let summary = format!("{count} events · {hours:.1}h booked · {:.1}h free 9–5", s.free.max(0.));
@@ -387,10 +428,10 @@ impl CalmView {
                 Measure::Strain => format!("{v:.1}h strained"),
                 _ => format!("{v:.1}h"),
             };
-            let breakdown = parts.iter().map(|&(c, v)| format!("{} {}", CALENDARS[c], fmt(v))).collect::<Vec<_>>().join(" · ");
+            let breakdown = parts.iter().map(|&(c, v)| format!("{} {}", self.calendars[c].name, fmt(v))).collect::<Vec<_>>().join(" · ");
             let dot = parts.first().map_or(th.cell, |&(c, _)| th.cals[c].dot);
             let span = s.bounds(&self.hidden).map(|(a, b)| format!("{} – {} · {:.1}h span", super::scene::fmt_time(a), super::scene::fmt_time(b), (b - a) / 60.));
-            let timing = matches!(m, Measure::Starts | Measure::Ends | Measure::Span) || self.details[self.preset] == Detail::DaySpan;
+            let timing = matches!(m, Measure::Starts | Measure::Ends | Measure::Span) || self.detail() == Detail::DaySpan;
             let line2 = match (timing, span) {
                 (true, Some(span)) => span,
                 _ if breakdown.is_empty() || !m.facetable() => "Click to open the week".into(),
@@ -511,7 +552,7 @@ impl CalmView {
                                         .items_center()
                                         .gap(px(8.))
                                         .child(div().size(px(9.)).rounded_full().bg(c.dot))
-                                        .child(div().text_size(px(12.)).text_color(th.muted).child(CALENDARS[e.calendar]))
+                                        .child(div().text_size(px(12.)).text_color(th.muted).child(self.calendars.get(e.calendar).map_or(String::new(), |c| c.name.clone())))
                                         .when(e.status == Status::Tentative, |d| {
                                             d.child(
                                                 div()
@@ -544,7 +585,7 @@ impl CalmView {
                         .children(e.location.clone().map(row)),
                 )
                 .child({
-                    let yours = crate::model::personal_energy((e.start_min + e.end_min()) * 0.5);
+                    let yours = self.data.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
                     let meter = |label: &'static str, level: f32, color: Hsla| {
                         div()
                             .flex()
@@ -591,18 +632,47 @@ impl CalmView {
             return None;
         }
         let th = self.theme;
-        let keys: [(&str, &str); 10] = [
-            ("1 – 5, Tab", "Switch lens"),
-            ("← →, Shift+scroll", "Previous / next"),
-            ("↑ ↓, scroll", "Scroll hours"),
-            ("Ctrl+scroll, + −", "Zoom hours"),
+        let row = |k: String, v: String, dim: bool| {
+            div()
+                .flex()
+                .justify_between()
+                .text_size(px(13.))
+                .when(dim, |d| d.opacity(0.45))
+                .child(div().text_color(th.muted).child(v))
+                .child(div().font_weight(FontWeight::MEDIUM).child(k))
+        };
+        let general = [
+            ("1 – 9, Tab", "Switch view"),
+            ("Ctrl+scroll, − =", "Zoom (day … year)"),
+            ("← →", "Previous / next"),
+            ("Scroll, ↑ ↓", "Scroll hours or time"),
+            ("Alt+scroll", "Zoom hours"),
+            ("F, click hour labels", "Full day / default hours"),
             ("T", "Jump to today"),
-            ("F", "Fisheye around the pointer"),
+            ("E", "Edit this view"),
+            ("Z", "Extra time zones"),
+            ("R", "Sync calendars now"),
             ("D", "Light / dark"),
-            ("Click", "Event details · open a week"),
+            ("Click", "Details · open a day or week"),
             ("Esc", "Close"),
             ("`", "Frame stats"),
-        ];
+        ]
+        .map(|(k, v)| row(k.into(), v.into(), false));
+        // This view's own keys, from its params; dimmed when not offered at the current zoom.
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let view_keys: Vec<_> = spec
+            .params
+            .iter()
+            .filter_map(|p| {
+                let k = p.key.as_ref()?;
+                let what = p.label.clone().unwrap_or_else(|| p.name.clone());
+                let what = if p.bind == Bind::Toggle { format!("{what} on / off") } else { format!("Cycle {}", what.to_lowercase()) };
+                Some(row(k.to_uppercase(), what, !spec.active(p, values, mark)))
+            })
+            .collect();
+        let view_title = (!view_keys.is_empty()).then(|| {
+            div().mt(px(8.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(th.faint).child(format!("{} view", spec.name).to_uppercase())
+        });
         Some(
             div()
                 .absolute()
@@ -626,14 +696,9 @@ impl CalmView {
                         .border_color(th.border)
                         .shadow_lg()
                         .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).mb(px(4.)).child("Keyboard"))
-                        .children(keys.into_iter().map(|(k, v)| {
-                            div()
-                                .flex()
-                                .justify_between()
-                                .text_size(px(13.))
-                                .child(div().text_color(th.muted).child(v))
-                                .child(div().font_weight(FontWeight::MEDIUM).child(k))
-                        })),
+                        .children(general)
+                        .children(view_title)
+                        .children(view_keys),
                 ),
         )
     }
@@ -664,23 +729,12 @@ impl CalmView {
     }
 }
 
-/// Click handler that edits the current lens's colour encoding.
-fn on_color(
-    cx: &mut Context<CalmView>,
-    f: impl Fn(&mut ColorEnc) + 'static,
-) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
-    cx.listener(move |this, _, _, cx| {
-        let mut enc = this.color();
-        f(&mut enc);
-        this.set_color(enc);
-        cx.notify();
-    })
-}
 
 impl CalmView {
     /// Zoom stops on the right edge; the highlight follows the continuous zoom.
+    /// Zoom stops as a horizontal strip, bottom right beside the view switcher. Where full
+    /// names would crowd the switcher, they shorten to initials.
     pub(super) fn zoom_slider(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        const ITEM: f32 = 26.;
         let th = self.theme;
         let spec = self.spec();
         let logs = super::stops_log(spec);
@@ -693,10 +747,18 @@ impl CalmView {
             (k as f32 + ((z - a) / (b - a)).clamp(0., 1.)).min((logs.len() - 1) as f32)
         };
         let nearest = pos.round() as usize;
+        let n = spec.stops.len() as f32;
+        // Room to the right of the centred switcher.
+        let switcher_w = self.views.len() as f32 * SWITCH_W + 10.;
+        let room = (self.viewport.0 - switcher_w) * 0.5 - 28.;
+        let short = room < n * 58. + 8.;
+        let item = if short { 26. } else { 58. };
         let items = spec.stops.iter().enumerate().map(|(i, s)| {
+            let label: String = if short { s.name.chars().take(1).collect() } else { s.name.clone() };
             div()
                 .id(("stop", i))
-                .h(px(ITEM))
+                .w(px(item))
+                .h(px(26.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -710,17 +772,16 @@ impl CalmView {
                     this.zoom_to_stop(i, None);
                     cx.notify();
                 }))
-                .child(s.name)
+                .child(label)
         });
         div()
             .absolute()
-            .right(px(6.))
-            .top(px(self.plot().1))
-            .w(px(super::scene::MARGIN_R - 12.))
+            .right(px(16.))
+            // Centred on the switcher row (40 px tall, 18 px up).
+            .bottom(px(21.))
             .p(px(3.))
             .flex()
-            .flex_col()
-            .rounded(px(16.))
+            .rounded_full()
             .bg(th.surface)
             .border_1()
             .border_color(th.border)
@@ -728,13 +789,176 @@ impl CalmView {
             .child(
                 div()
                     .absolute()
-                    .top(px(3. + pos * ITEM))
-                    .left(px(3.))
-                    .right(px(3.))
-                    .h(px(ITEM))
+                    .left(px(3. + pos * item))
+                    .top(px(3.))
+                    .w(px(item))
+                    .h(px(26.))
                     .rounded_full()
                     .bg(with_alpha(th.ink, if th.dark { 0.12 } else { 0.07 })),
             )
             .children(items)
+    }
+}
+
+/// One editable channel: caption, KDL child, optional property, (label, KDL value) options.
+type EditRow = (&'static str, &'static str, Option<&'static str>, &'static [(&'static str, &'static str)]);
+
+const EDIT_ROWS: [EditRow; 8] = [
+    ("Days per line", "facet", Some("per-line"), &[("1", "1"), ("7", "7"), ("14", "14")]),
+    ("Lines run", "facet", Some("dir"), &[("Down", "rows"), ("Across", "columns")]),
+    ("Coordinates", "coord", None, &[("Cartesian", "cartesian"), ("Polar", "polar")]),
+    ("Across (x)", "x", None, &[("Time", "time-of-day"), ("Lane", "lane"), ("Calendar", "calendar"), ("Demand", "demand"), ("None", "none")]),
+    ("Down (y)", "y", None, &[("Time", "time-of-day"), ("Lane", "lane"), ("Calendar", "calendar"), ("Demand", "demand"), ("None", "none")]),
+    ("Overlaps", "collide", None, &[("Side by side", "split"), ("Conflicts", "highlight-conflict"), ("Overlay", "overlay")]),
+    ("Mark", "mark", None, &[("Block", "block"), ("Pill", "pill"), ("List", "list"), ("Heat", "heat")]),
+    ("Time zones", "zones", None, &[("All", "all"), ("Primary", "primary")]),
+];
+
+impl CalmView {
+    /// The KDL value a view currently has for an editor row.
+    fn edit_current(spec: &crate::spec::Spec, child: &str, prop: Option<&str>) -> String {
+        use crate::spec::{Axis, Collide, Coord, Dir, Mark, ZoneAxes};
+        let axis = |a: Axis| match a {
+            Axis::TimeOfDay => "time-of-day",
+            Axis::Lane => "lane",
+            Axis::Calendar => "calendar",
+            Axis::Demand => "demand",
+            Axis::None => "none",
+        };
+        match (child, prop) {
+            ("facet", Some("per-line")) => spec.facet.per_line.to_string(),
+            ("facet", _) => (if spec.facet.dir == Dir::Rows { "rows" } else { "columns" }).into(),
+            ("coord", _) => (if spec.coord == Coord::Polar { "polar" } else { "cartesian" }).into(),
+            ("x", _) => axis(spec.x).into(),
+            ("y", _) => axis(spec.y).into(),
+            ("collide", _) => match spec.collide {
+                Collide::Split => "split",
+                Collide::HighlightConflict => "highlight-conflict",
+                Collide::Overlay => "overlay",
+            }
+            .into(),
+            ("mark", _) => match spec.mark {
+                Mark::Block => "block",
+                Mark::Pill => "pill",
+                Mark::List => "list",
+                Mark::Heat => "heat",
+            }
+            .into(),
+            ("zones", _) => (if spec.zones == ZoneAxes::Primary { "primary" } else { "all" }).into(),
+            _ => String::new(),
+        }
+    }
+
+    pub(super) fn editor_panel(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let t = self.editor.x;
+        if t < 0.01 {
+            return None;
+        }
+        let th = self.theme;
+        let spec = self.spec();
+        let name = spec.name.clone();
+        let edited = self.conf.generated_names.contains(&name);
+        let made_here = !self.conf.base_names.contains(&name);
+        let rows = EDIT_ROWS.iter().map(|&(caption, child, prop, options)| {
+            let current = Self::edit_current(spec, child, prop);
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().text_size(px(11.5)).text_color(th.faint).child(caption))
+                .child(div().flex().flex_wrap().gap(px(2.)).children(options.iter().map(|&(label, value)| {
+                    let id = gpui::ElementId::Name(format!("edit-{child}-{}-{value}", prop.unwrap_or("")).into());
+                    self.chip(id, label, value == current).on_click(cx.listener(move |this, _, _, cx| {
+                        this.edit_channel(child, prop, value);
+                        cx.notify();
+                    }))
+                })))
+        });
+        let note = self.editor_note.clone().map(|(text, error)| {
+            div().text_size(px(11.5)).text_color(if error { th.now } else { th.faint }).child(text)
+        });
+        Some(
+            div()
+                .absolute()
+                .top(px(76.))
+                .right(px(16.))
+                .w(px(330.))
+                .opacity(t.clamp(0., 1.))
+                .ml(px(16. * (1. - t)))
+                .p(px(18.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .rounded(px(16.))
+                .bg(th.surface)
+                .border_1()
+                .border_color(th.border)
+                .shadow_lg()
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(format!("Edit “{name}”")))
+                        .child(self.button("editor-close", "✕").text_size(px(13.)).on_click(cx.listener(|this, _, _, cx| {
+                            this.editor_on = false;
+                            cx.notify();
+                        }))),
+                )
+                .child(div().text_size(px(11.5)).text_color(th.muted).child(spec.describe(spec.mark)))
+                .children(rows)
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .mt(px(4.))
+                        .child(self.button("editor-dup", "Duplicate").on_click(cx.listener(|this, _, _, cx| {
+                            this.duplicate_current();
+                            cx.notify();
+                        })))
+                        .when(edited, |d| {
+                            d.child(self.button("editor-reset", if made_here { "Delete" } else { "Reset" }).on_click(cx.listener(|this, _, _, cx| {
+                                this.reset_current();
+                                cx.notify();
+                            })))
+                        }),
+                )
+                .child(div().text_size(px(11.)).text_color(th.faint).child("Saved to views.generated.kdl · your calm.kdl is never rewritten"))
+                .children(note),
+        )
+    }
+}
+
+impl CalmView {
+    /// The time here, and beneath it the time in each extra zone.
+    fn clock(&self, compact: bool) -> Div {
+        let th = self.theme;
+        let now = chrono::Utc::now();
+        let here = now.with_timezone(&chrono::Local);
+        let others = (!compact).then(|| {
+            self.zones.extra.iter().map(|tz| {
+                let t = now.with_timezone(tz);
+                let day = match (t.date_naive() - here.date_naive()).num_days() {
+                    d if d > 0 => " +1",
+                    d if d < 0 => " −1",
+                    _ => "",
+                };
+                format!("{} {}{day}", self.zones.label(*tz, t.date_naive()), t.format("%-I:%M %P"))
+            })
+        });
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(here.format("%-I:%M %P").to_string()))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .text_size(px(11.5))
+                    .text_color(th.faint)
+                    .children(others.into_iter().flatten()),
+            )
     }
 }

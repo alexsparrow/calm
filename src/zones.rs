@@ -50,13 +50,17 @@ fn parse_list(s: &str) -> Vec<Tz> {
 
 impl Zones {
     /// System zone plus extras from the config file, overridden by `cli` when given.
-    pub fn load(cli: Option<&str>) -> Self {
+    /// Zones from calm.kdl when it declares them, else the older `config` file; `cli` overrides the list.
+    pub fn load(cli: Option<&str>, declared: Option<&crate::viewconf::ZoneDecl>) -> Self {
         // Trust what the system resolves (as `date` does) over the zone's *name*: a
         // `/etc/localtime` link can be named for one zone while holding another's rules.
         let today = chrono::Local::now().date_naive();
         let config = read_config();
         let setting = |key: &str| config.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
-        let configured = cli.map(str::to_string).or_else(|| setting("zones"));
+        let configured = cli
+            .map(str::to_string)
+            .or_else(|| declared.map(|d| d.zones.join(",")))
+            .or_else(|| setting("zones"));
         let names = |prefixes: &[&str]| -> std::collections::HashMap<Tz, String> {
             config
             .iter()
@@ -72,7 +76,15 @@ impl Zones {
             })
             .collect()
         };
-        let (short, long) = (names(&["short.", "label."]), names(&["long."]));
+        let (short, long) = match declared {
+            Some(d) => {
+                let pick = |f: fn(&crate::viewconf::ZoneLabel) -> Option<String>| {
+                    d.labels.iter().filter_map(|l| Some((l.0.parse::<Tz>().ok()?, f(l)?))).collect()
+                };
+                (pick(|l| l.1.clone()), pick(|l| l.2.clone()))
+            }
+            None => (names(&["short.", "label."]), names(&["long."])),
+        };
         let local = Self::default().primary_offset(today);
         let primary = system_zone().filter(|tz| offset(*tz, today) == local);
         let mut extra = configured.as_deref().map(parse_list).unwrap_or_default();

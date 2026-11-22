@@ -6,10 +6,10 @@
 //! Zooming and scrolling therefore never relayout; only semantic changes do
 //! (a different lens, level of detail, or hidden calendars).
 
-use crate::model::{self, CALENDARS, Event, Status};
+use crate::model::{self, Event, MAX_CALENDARS, Status};
 use crate::spec::{Axis, Collide, Mark, Spec};
 
-const N: usize = CALENDARS.len();
+const N: usize = MAX_CALENDARS;
 
 /// Inner geometry indices into [`Target::g`].
 pub const U0: usize = 0;
@@ -114,7 +114,9 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
         _ => {}
     }
 
+    // Blocks bend into arcs in polar coordinates, and their labels follow.
     let label = match mark {
+        Mark::Block if spec.coord == crate::spec::Coord::Polar => LabelMode::Arc,
         Mark::Block => LabelMode::Inside,
         Mark::Pill => LabelMode::Overflow,
         _ => LabelMode::Arc,

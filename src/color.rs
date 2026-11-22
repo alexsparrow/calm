@@ -5,10 +5,10 @@
 
 use gpui::{Hsla, Rgba, hsla};
 
-use crate::model::{self, CALENDARS, Event};
+use crate::model::{self, Event, MAX_CALENDARS};
 use crate::theme::{CalColors, Theme};
 
-const N: usize = CALENDARS.len();
+const N: usize = MAX_CALENDARS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Measure {
@@ -48,33 +48,19 @@ pub struct ColorEnc {
     /// Facet the measure by calendar and compose the parts.
     pub by_calendar: bool,
     pub compose: Compose,
+    pub palette: Palette,
+}
+
+/// Where a mark's hue comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Palette {
+    /// The measure's own ramp.
+    Scale,
+    /// Its calendar's colour; the measure sets how strong.
+    Calendar,
 }
 
 impl Measure {
-    pub const ALL: [Measure; 8] = [
-        Measure::Hours,
-        Measure::Count,
-        Measure::Demand,
-        Measure::Strain,
-        Measure::Free,
-        Measure::Starts,
-        Measure::Ends,
-        Measure::Span,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Measure::Hours => "Hours",
-            Measure::Count => "Events",
-            Measure::Demand => "Demand",
-            Measure::Strain => "Strain",
-            Measure::Free => "Free",
-            Measure::Starts => "Starts",
-            Measure::Ends => "Ends",
-            Measure::Span => "Span",
-        }
-    }
-
     /// Meaningful for a single event, not only for aggregates.
     pub fn per_event(self) -> bool {
         matches!(self, Measure::Hours | Measure::Demand | Measure::Strain)
@@ -131,7 +117,7 @@ impl Compose {
 
 impl ColorEnc {
     pub fn faceted(&self) -> bool {
-        self.by_calendar && self.measure.facetable()
+        (self.by_calendar || self.palette == Palette::Calendar) && self.measure.facetable()
     }
 }
 
@@ -384,6 +370,19 @@ pub fn event_colors(enc: &ColorEnc, e: &Event, th: &Theme) -> Option<CalColors> 
     if enc.by_calendar || !enc.measure.per_event() {
         return None;
     }
+    if enc.palette == Palette::Calendar {
+        // The calendar's hue at the measure's strength. The edge keeps full calendar
+        // colour so which calendar stays legible however pale the fill.
+        let t = match enc.measure {
+            Measure::Hours => 0.25 + 0.75 * (e.dur_min / 180.).min(1.),
+            Measure::Demand => 0.15 + 0.85 * e.energy,
+            // Easy and neutral alike stay pale; only strain deepens.
+            _ => 0.15 + 0.85 * (model::strain(e) / 0.4).clamp(0., 1.),
+        };
+        let dot = th.cals[e.calendar].dot;
+        let fill = mix(th.cell, dot, 0.1 + 0.9 * t);
+        return Some(CalColors { fill, edge: dot, text: text_on(th, fill), dot });
+    }
     let color = match enc.measure {
         Measure::Hours => ramp(th, Measure::Hours, 0.25 + 0.75 * (e.dur_min / 180.).min(1.)),
         Measure::Demand => ramp(th, Measure::Demand, 0.2 + 0.8 * e.energy),
@@ -420,4 +419,31 @@ pub fn intensity(m: Measure, total: f32, norm: f32) -> f32 {
         Measure::Ends => (total - 900.) / 480.,
         _ => total / norm,
     }
+}
+
+impl Measure {
+    /// Config name → measure. `duration` is the per-event name for hours.
+    pub fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "hours" | "duration" => Measure::Hours,
+            "events" | "count" => Measure::Count,
+            "demand" => Measure::Demand,
+            "strain" => Measure::Strain,
+            "free" => Measure::Free,
+            "starts" => Measure::Starts,
+            "ends" => Measure::Ends,
+            "span" => Measure::Span,
+            _ => return None,
+        })
+    }
+
+    pub const NAMES: &[&str] = &["calendar", "hours", "duration", "events", "demand", "strain", "free", "starts", "ends", "span"];
+}
+
+impl Compose {
+    pub fn from_name(s: &str) -> Option<Self> {
+        Compose::ALL.into_iter().find(|c| c.label().eq_ignore_ascii_case(s))
+    }
+
+    pub const NAMES: &[&str] = &["blend", "stripes", "stack", "dominant"];
 }
