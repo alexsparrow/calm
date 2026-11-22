@@ -127,6 +127,28 @@ pub struct Event {
     pub all_day: Option<AllDay>,
     /// Set while a change to it is queued (see `sync::outbox`).
     pub sync: Option<crate::sync::outbox::State>,
+    /// Where it lives, for editing; `None` for demo data and read-only feeds.
+    pub edit: Option<std::sync::Arc<EditRef>>,
+}
+
+/// An event as its calendar service knows it: what an edit needs.
+#[derive(Debug, PartialEq)]
+pub struct EditRef {
+    /// `<source>/<calendar id>`.
+    pub key: String,
+    /// The event's ID, or an instance ID for one occurrence of a series.
+    pub id: String,
+    /// The series' ID for an instance; the event's own otherwise.
+    pub uid: String,
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub end: chrono::DateTime<chrono::Utc>,
+    pub all_day: bool,
+    /// You may change it (the calendar is yours, or shared with you to edit).
+    pub editable: bool,
+    /// Other people invited.
+    pub guests: usize,
+    /// The full notes (`Event::notes` is cut short).
+    pub description: Option<String>,
 }
 
 /// One day's piece of an all-day event. Multi-day events are a piece per day (one
@@ -254,6 +276,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             strain: 0.,
             all_day: None,
             sync: None,
+            edit: None,
         });
     };
 
@@ -335,6 +358,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             strain: 0.,
             all_day: None,
             sync: None,
+            edit: None,
         };
         events.extend(all_day_pieces(e, first, first + days));
     };
@@ -473,7 +497,12 @@ impl Dataset {
 /// Default demand by calendar, until rules can set it per event.
 /// Builds the view's dataset from synced occurrences, in the local time zone.
 /// Timed events crossing midnight are split into per-day segments.
-pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of: impl Fn(&str) -> usize, calendars: &[Calendar]) -> Dataset {
+pub fn from_occurrences(
+    occurrences: &[crate::sync::store::Stored],
+    calendar_of: impl Fn(&str) -> usize,
+    editable: impl Fn(&str) -> bool,
+    calendars: &[Calendar],
+) -> Dataset {
     let (origin, today) = range();
     let mut events = Vec::new();
     let day_of = |d: NaiveDate| (d - origin).num_days() as i32;
@@ -497,6 +526,19 @@ pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of:
             strain: 0.,
             all_day: None,
             sync: s.sync,
+            edit: (!o.ref_id.is_empty()).then(|| {
+                std::sync::Arc::new(EditRef {
+                    key: s.source.clone(),
+                    id: o.ref_id.clone(),
+                    uid: o.uid.clone(),
+                    start: o.start,
+                    end: o.end,
+                    all_day: o.all_day,
+                    editable: editable(&s.source),
+                    guests: o.attendees.len().saturating_sub(1),
+                    description: o.description.clone(),
+                })
+            }),
         };
         if o.all_day {
             // End is exclusive; a zero-length all-day event still covers its date.
@@ -552,6 +594,7 @@ mod all_day_tests {
             strain: 0.,
             all_day: None,
             sync: None,
+            edit: None,
         }
     }
 

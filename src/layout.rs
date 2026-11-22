@@ -92,7 +92,14 @@ pub fn solve(events: &[Event], spec: &Spec, mark: Mark, hidden: &[bool; N]) -> V
             g: [0., 1., 0., 1.],
             kind: Kind::AllDay { row: a.row, prev: a.prev, next: a.next },
             alpha: alpha(e),
-            label: if mark == Mark::Heat || spec.coord == crate::spec::Coord::Polar { LabelMode::Hidden } else { LabelMode::Row },
+            // Dials title their rings along the curve; aggregate stripes are too thin for text.
+            label: if mark == Mark::Heat {
+                LabelMode::Hidden
+            } else if spec.coord == crate::spec::Coord::Polar {
+                LabelMode::Arc
+            } else {
+                LabelMode::Row
+            },
             conflict: false,
         })
     };

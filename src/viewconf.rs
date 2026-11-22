@@ -128,6 +128,10 @@ pub struct Settings {
     pub energy: Option<crate::energy::EnergyModel>,
     /// Where you are (latitude, longitude), for daylight.
     pub location: Option<(f32, f32)>,
+    /// `auto` (send changes after a short pause) or `review` (stage them until committed).
+    pub writes: Option<String>,
+    /// The calendar new events go to, by name.
+    pub default_calendar: Option<String>,
     pub opacity: Option<f32>,
     pub blur: bool,
     /// `light`, `dark` or `system`.
@@ -171,6 +175,8 @@ pub struct SourceDecl {
     pub google: Option<String>,
     pub calendar: Option<String>,
     pub refresh: Option<String>,
+    /// Overrides `sync writes=` for this source.
+    pub writes: Option<String>,
 }
 
 #[derive(Default)]
@@ -357,11 +363,28 @@ impl Loader {
                     self.settings.text.push(node.to_string());
                 }
                 "colors" => self.colors_node(&at, node),
+                "sync" => {
+                    // `sync writes="auto"|"review"`: whether your changes send by themselves.
+                    self.check_props(&at, node, &["writes"]);
+                    if let Some(w) = self.str_prop(&at, node, "writes")
+                        && self.choice(&at, node.span().offset(), "writes", &w, &[("auto", ()), ("review", ())]).is_some()
+                    {
+                        self.settings.writes = Some(w);
+                        self.settings.text.push(node.to_string());
+                    }
+                }
+                "default-calendar" => {
+                    self.check_props(&at, node, &[]);
+                    if let Some(c) = self.arg_str(&at, node, 0, "a calendar name") {
+                        self.settings.default_calendar = Some(c);
+                        self.settings.text.push(node.to_string());
+                    }
+                }
                 "order" => {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
@@ -649,7 +672,7 @@ impl Loader {
 
     /// `source "Personal" url-file="…" calendar="Personal" refresh="15m"`
     fn source_node(&mut self, at: &At, node: &KdlNode) {
-        self.check_props(at, node, &["url", "url-file", "path", "google", "calendar", "refresh"]);
+        self.check_props(at, node, &["url", "url-file", "path", "google", "calendar", "refresh", "writes"]);
         let off = node.span().offset();
         let Some(name) = self.arg_str(at, node, 0, "a name") else { return };
         let (url, url_file, path) = (self.str_prop(at, node, "url"), self.str_prop(at, node, "url-file"), self.str_prop(at, node, "path"));
@@ -667,6 +690,13 @@ impl Loader {
         let (line, col) = at.pos(off);
         if google.is_none() {
             self.cal_refs.push((at.file.to_string(), line, col, calendar.clone().unwrap_or_else(|| name.clone()), calendar.is_some()));
+        }
+        let writes = self.str_prop(at, node, "writes");
+        if let Some(w) = &writes
+            && !["auto", "review"].contains(&w.as_str())
+        {
+            self.err(at, off, format!("`writes` should be \"auto\" or \"review\", not `{w}`"));
+            return;
         }
         let refresh = self.str_prop(at, node, "refresh");
         if let Some(r) = &refresh
@@ -686,7 +716,7 @@ impl Loader {
             shown.push(("url", "<hidden>"));
         }
         self.settings.text.push(shown.to_string());
-        self.sources.push(SourceDecl { name, url, url_file, path, google, calendar, refresh });
+        self.sources.push(SourceDecl { name, url, url_file, path, google, calendar, refresh, writes });
     }
 
     fn finish(self) -> Config {

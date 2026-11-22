@@ -3,6 +3,7 @@
 //! `docs/storage-sync.md` for the design.
 
 pub mod cli;
+pub mod edit;
 mod config;
 pub mod google;
 pub mod ics;
@@ -228,6 +229,8 @@ pub enum Update {
 pub enum Command {
     /// Sync every source now, ignoring schedules.
     Refresh,
+    /// Send queued changes now (they were just made); no reading.
+    Flush,
 }
 
 /// Starts the background scheduler. Each due source syncs on its own thread
@@ -272,6 +275,17 @@ pub fn start(sources: Vec<Source>) -> (Receiver<Update>, Sender<Command>) {
                 // Sleep until a command arrives or it's worth checking schedules again.
                 match cmd_rx.recv_timeout(Duration::from_secs(30)) {
                     Ok(Command::Refresh) => force = true,
+                    Ok(Command::Flush) => {
+                        for s in &sources {
+                            if let Location::Google(account) = &s.location
+                                && let Ok(mut store) = Store::open(&path)
+                                && let Ok(f) = google::flush_account(&mut store, &s.name, account, Utc::now())
+                                && (f.sent > 0 || !f.problems.is_empty())
+                            {
+                                let _ = tx.send(Update::Changed);
+                            }
+                        }
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }

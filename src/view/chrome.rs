@@ -25,7 +25,7 @@ fn hash(s: &str) -> usize {
 }
 
 impl CalmView {
-    fn button(&self, id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    pub(super) fn button(&self, id: impl Into<gpui::ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
         let th = self.theme;
         div()
             .id(id)
@@ -187,7 +187,7 @@ impl CalmView {
             )
     }
 
-    fn chip(&self, id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, active: bool) -> Stateful<Div> {
+    pub(super) fn chip(&self, id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, active: bool) -> Stateful<Div> {
         let th = self.theme;
         div()
             .id(id)
@@ -205,7 +205,7 @@ impl CalmView {
             .child(label.into())
     }
 
-    fn bar(&self) -> Div {
+    pub(super) fn bar(&self) -> Div {
         let th = self.theme;
         div()
             .flex()
@@ -629,7 +629,16 @@ impl CalmView {
                 .border_1()
                 .border_color(th.border)
                 .shadow_lg()
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // A click elsewhere in the drawer closes an open picker.
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if this.picker.take().is_some() {
+                            cx.notify();
+                        }
+                        cx.stop_propagation();
+                    }),
+                )
                 .child(
                     div()
                         .flex()
@@ -662,7 +671,11 @@ impl CalmView {
                                             )
                                         }),
                                 )
-                                .child(div().text_size(px(21.)).font_weight(FontWeight::SEMIBOLD).line_height(px(27.)).child(e.title.clone())),
+                                // Editable: the title is a field (Enter or clicking away saves it).
+                                .child(match &self.drawer_edit {
+                                    Some(d) => div().w(px(DRAWER_W - 90.)).font_weight(FontWeight::SEMIBOLD).child(d.title.clone()),
+                                    None => div().text_size(px(21.)).font_weight(FontWeight::SEMIBOLD).line_height(px(27.)).child(e.title.clone()),
+                                }),
                         )
                         .child(self.button("close", "✕").text_size(px(13.)).on_click(cx.listener(|this, _, _, cx| {
                             this.selected = None;
@@ -675,10 +688,18 @@ impl CalmView {
                         .flex_col()
                         .gap(px(4.))
                         .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(date.format("%A %-d %B").to_string()))
-                        .child(row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }))
+                        .child(match self.time_row(cx) {
+                            // Editable: date and times open pickers.
+                            Some(pickers) => pickers,
+                            None => row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }),
+                        })
                         .children(zone_rows)
-                        .children(e.location.clone().map(row)),
+                        .child(match &self.drawer_edit {
+                            Some(d) => div().mt(px(4.)).px(px(8.)).py(px(3.)).rounded(px(7.)).border_1().border_color(th.border).bg(th.bg).child(d.location.clone()),
+                            None => div().children(e.location.clone().map(row)),
+                        }),
                 )
+                .children(self.drawer_actions(cx))
                 // Energy only means something for time you spend.
                 .when(e.all_day.is_none(), |d| d.child({
                     let yours = self.data.energy_at(e.day, (e.start_min + e.end_min()) * 0.5);
@@ -747,6 +768,9 @@ impl CalmView {
             ("T", "Jump to today"),
             ("E", "Edit this view"),
             ("M", "Menu: more calendars, actions"),
+            ("N", "New event"),
+            ("Delete", "Delete the selected event"),
+            ("O", "Changes waiting to sync"),
             ("Z", "Extra time zones"),
             ("R", "Sync calendars now"),
             ("D", "Light / dark"),
@@ -1214,6 +1238,15 @@ impl CalmView {
                 .shadow_lg()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
+                .child(action("menu-new", "New event", "N").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.new_event(cx);
+                })))
+                .child(action("menu-changes", "Changes", "O").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.changes_on = true;
+                    cx.notify();
+                })))
                 .child(action("menu-edit", "Edit this view", "E").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
                     this.editor_on = true;

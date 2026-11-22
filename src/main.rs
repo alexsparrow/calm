@@ -56,6 +56,7 @@ fn main() {
         opts.blur |= config.settings.blur;
     }
     Application::new().run(move |cx: &mut App| {
+        view::bind_keys(cx);
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("bundled fonts load");

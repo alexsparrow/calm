@@ -118,6 +118,9 @@ CREATE TABLE history (
     after TEXT,
     origin TEXT NOT NULL
 );
+"#, r#"
+-- Rows cached before migration 3 have no provider IDs: refresh every source once to fill them in.
+UPDATE sources SET sync_token = NULL, content_hash = NULL, etag = NULL, last_modified = NULL;
 "#];
 
 /// Per-source sync bookkeeping.

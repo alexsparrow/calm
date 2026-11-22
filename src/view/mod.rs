@@ -10,6 +10,8 @@
 
 mod arrange;
 mod chrome;
+mod editing;
+mod input;
 mod scene;
 
 use std::cell::Cell;
@@ -18,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Datelike;
 use gpui::{
-    Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollDelta,
+    App, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, Render, ScrollDelta,
     ScrollWheelEvent, Subscription, Window, WindowAppearance, canvas, div, prelude::*,
 };
 
@@ -215,6 +217,21 @@ pub struct CalmView {
     menu_on: bool,
     /// The view's controls, popped up from their button when they don't fit the bottom row.
     params_open: bool,
+    /// The drawer's text fields, for an event you may edit.
+    drawer_edit: Option<editing::DrawerEdit>,
+    /// A note at the bottom (e.g. "Deleted · Undo").
+    toast: Option<editing::Toast>,
+    /// Events whose guests you chose not to notify, by (store key, event ID).
+    quiet: std::collections::HashSet<(String, String)>,
+    /// The changes panel, and the changes you've unticked in it.
+    changes_on: bool,
+    changes_unticked: std::collections::HashSet<i64>,
+    /// Put the cursor in the drawer's title once it appears (a new event).
+    focus_title: bool,
+    /// The drawer's open date or time picker.
+    picker: Option<editing::Picker>,
+    /// `--picker`: open this picker once the drawer has an event.
+    pending_picker: Option<u8>,
     hud_on: bool,
     mouse: Pt,
     hits: Vec<(usize, Hit)>,
@@ -371,7 +388,15 @@ impl CalmView {
             help_on: false,
             menu: Spring::new(0.),
             menu_on: opts.menu,
-            params_open: opts.controls,
+params_open: opts.controls,
+            drawer_edit: None,
+            toast: None,
+            quiet: Default::default(),
+            changes_on: opts.changes,
+            changes_unticked: Default::default(),
+            focus_title: false,
+            picker: None,
+            pending_picker: opts.picker,
             hud_on: opts.bench,
             mouse: (-1., -1.),
             hits: Vec::new(),
@@ -545,11 +570,19 @@ impl CalmView {
 
     fn set_data(&mut self, mut data: Dataset) {
         data.set_energy(&self.energy);
+        // Keep the selected event selected across reloads (an edit reloads the data).
+        let keep = self.selected.and_then(|i| self.data.events.get(i)).map(|e| (e.edit.as_ref().map(|r| (r.key.clone(), r.id.clone())), e.title.clone(), e.day));
+        let reselect = keep.and_then(|(id, title, day)| {
+            data.events.iter().position(|e| match (&id, &e.edit) {
+                (Some((k, i)), Some(r)) => &r.key == k && &r.id == i,
+                _ => e.title == title && e.day == day,
+            })
+        });
         self.data = data;
         self.marks.clear();
         self.flipping.clear();
         self.drawn_marks.clear();
-        self.selected = None;
+        self.selected = reselect;
         self.hovered = None;
         self.dirty = true;
         self.restat();
@@ -1016,6 +1049,8 @@ impl CalmView {
             "f" => self.toggle_full_day(),
             "z" => self.zones_on = !self.zones_on,
             "m" => self.menu_on = !self.menu_on,
+            "o" => self.changes_on = !self.changes_on,
+            "n" => self.new_event(cx),
             "e" => {
                 self.editor_on = !self.editor_on;
                 self.editor_note = None;
@@ -1029,10 +1064,14 @@ impl CalmView {
                 self.stress = !self.stress;
                 self.set_data(model::generate(if self.stress { 3 } else { 1 }));
             }
+            "delete" | "backspace" if self.selected.is_some() => self.delete_selected(cx),
             "escape" => {
-                if self.menu_on || self.params_open {
+                if self.picker.is_some() {
+                    self.picker = None;
+                } else if self.menu_on || self.params_open || self.changes_on {
                     self.menu_on = false;
                     self.params_open = false;
+                    self.changes_on = false;
                 } else if self.help_on {
                     self.help_on = false;
                 } else if self.editor_on {
@@ -1217,6 +1256,7 @@ fn theme_for(override_dark: Option<bool>, system_dark: bool, translucent: Option
 
 impl Render for CalmView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_drawer(window, cx);
         let t0 = Instant::now();
         let size = window.viewport_size();
         let viewport = (f32::from(size.width), f32::from(size.height));
@@ -1297,9 +1337,20 @@ impl Render for CalmView {
             .font_family("Inter")
             .text_color(th.ink)
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, ev, _, cx| this.on_key(ev, cx)))
+            // While you type in a field, keys are text, not shortcuts.
+            .on_key_down(cx.listener(|this, ev, window, cx| {
+                if !this.typing(window, cx) {
+                    this.on_key(ev, cx)
+                }
+            }))
             .on_mouse_move(cx.listener(|this, ev, _, cx| this.on_move(ev, cx)))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev, _, cx| this.on_down(ev, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev, window, cx| {
+                    window.focus(&this.focus);
+                    this.on_down(ev, cx)
+                }),
+            )
             .on_scroll_wheel(cx.listener(|this, ev, _, cx| this.on_scroll(ev, cx)))
             // Bar backgrounds sit under the canvas, so headers and labels draw over them.
             .children(self.chrome_bands())
@@ -1322,6 +1373,8 @@ impl Render for CalmView {
             .children(self.drawer_card(cx))
             .children(self.editor_panel(cx))
             .children(self.menu_panel(cx))
+            .children(self.toast_card(cx))
+            .children(self.changes_panel(cx))
             .children(self.help_card())
             .children(self.hud())
     }
@@ -1335,6 +1388,10 @@ pub struct Options {
     pub edit: bool,
     /// Open with the top-right menu showing (screenshots).
     pub menu: bool,
+    /// Open with the changes panel showing (screenshots).
+    pub changes: bool,
+    /// Open the drawer's picker (0 date, 1 start, 2 end) once an event is selected (screenshots).
+    pub picker: Option<u8>,
     /// Open with the controls popup showing, when they're folded into a button (screenshots).
     pub controls: bool,
     pub cycle: bool,
@@ -1367,6 +1424,8 @@ impl Options {
                 "--still" => o.still = true,
                 "--edit" => o.edit = true,
                 "--menu" => o.menu = true,
+                "--changes" => o.changes = true,
+                "--picker" => o.picker = args.next().and_then(|n| n.parse().ok()),
                 "--controls" => o.controls = true,
                 "--cycle" => o.cycle = true,
                 // Like a translucent terminal: a mostly solid background, no blur.
@@ -1411,13 +1470,17 @@ struct Sync {
 }
 
 /// Reads every configured source's occurrences from the offline cache.
+/// Whether queued changes are drawn as if done (the changes panel's Preview), or the calendar
+/// as the server has it.
+pub(super) static PREVIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 fn load_live(sources: &[crate::sync::Source], calendars: &[Calendar]) -> Dataset {
     let span = model::generate_span();
     let store = crate::sync::store::Store::open(&crate::sync::db_path()).ok();
     let mut stored = store.as_ref().and_then(|s| s.occurrences(span.0, span.1).ok()).unwrap_or_default();
     // Queued changes show as if done, marked, until the server confirms them.
     if let Some(s) = &store {
-        crate::sync::google::overlay(s, &mut stored, chrono::Utc::now(), true);
+        crate::sync::google::overlay(s, &mut stored, chrono::Utc::now(), PREVIEW.load(std::sync::atomic::Ordering::Relaxed));
     }
     // Which calendar each stored key belongs to: an iCal source's own, or for a Google
     // account (`Account/calendar-id`) the calendar named like that Google calendar.
@@ -1431,7 +1494,18 @@ fn load_live(sources: &[crate::sync::Source], calendars: &[Calendar]) -> Dataset
             }
         }
     }
-    model::from_occurrences(&stored, |key| keys.get(key).copied().unwrap_or(0), calendars)
+    // Calendars you may change: Google calendars you own or can write to.
+    let mut editable: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in sources {
+        if matches!(s.location, crate::sync::Location::Google(_)) {
+            for c in store.as_ref().and_then(|st| st.calendars(&s.name).ok()).unwrap_or_default() {
+                if c.access == "owner" || c.access == "writer" {
+                    editable.insert(format!("{}/{}", s.name, c.id));
+                }
+            }
+        }
+    }
+    model::from_occurrences(&stored, |key| keys.get(key).copied().unwrap_or(0), |key| editable.contains(key), calendars)
 }
 
 impl CalmView {
@@ -1821,5 +1895,51 @@ impl CalmView {
         }
         let centre = ((cell[0] + cell[2]) * 0.5, (cell[1] + cell[3]) * 0.5);
         self.arr_of(p, false).day_at(centre).map_or(0, |d| self.band_rows(p, d))
+    }
+}
+
+/// App-wide key bindings (text fields).
+pub fn bind_keys(cx: &mut App) {
+    input::bind_keys(cx);
+}
+
+impl CalmView {
+    /// Whether changes to `key`'s source wait for review (`sync writes="review"`).
+    fn review_mode(&self, key: &str) -> bool {
+        let source = key.split('/').next().unwrap_or(key);
+        let s = &self.conf.settings;
+        let per_source = s.sources.as_deref().and_then(|ss| ss.iter().find(|d| d.name == source)).and_then(|d| d.writes.clone());
+        per_source.or(s.writes.clone()).as_deref() == Some("review")
+    }
+
+    /// Queues a change you made: staged in review mode, otherwise sent after a short pause
+    /// (so a burst of edits to one event goes as one). Shows it at once either way.
+    pub(super) fn queue_change(&mut self, mut op: crate::sync::outbox::Op, cx: &mut Context<Self>) -> Option<i64> {
+        use crate::sync::outbox::State;
+        let review = self.review_mode(&op.key());
+        op.state = if review { State::Draft } else { State::Pending };
+        op.next_attempt_at = (!review).then(|| chrono::Utc::now().timestamp() + 2);
+        let seq = crate::sync::store::Store::open(&crate::sync::db_path()).ok().and_then(|mut s| s.queue(op).ok()).flatten();
+        self.reload_live();
+        if !review {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(2200)).await;
+                let _ = this.update(cx, |this, _| {
+                    if let Some(s) = &this.sync {
+                        let _ = s.commands.send(crate::sync::Command::Flush);
+                    }
+                });
+            })
+            .detach();
+        }
+        seq
+    }
+
+    /// Rebuilds the data from the cache and outbox (after a change of yours).
+    pub(super) fn reload_live(&mut self) {
+        if let Some(sync) = &self.sync {
+            let data = load_live(&sync.sources, &self.calendars);
+            self.set_data(data);
+        }
     }
 }

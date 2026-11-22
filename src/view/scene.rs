@@ -230,17 +230,16 @@ impl CalmView {
                 let (prev, next) = (prev && across, next && across);
                 let (x0, x1) = (if prev { cell[0] - 3. } else { cell[0] + 2. }, if next { cell[2] + 3. } else { cell[2] - 2. });
                 if inner.coord == Coord::Polar {
-                    // A thin ring just inside the dial's centre, one per stacked event.
-                    let (r_in, _) = inner.radii();
-                    let r = (r_in - 5. - row as f32 * 6.).max(3.);
+                    // A ring just inside the dial's rim of the centre, one per stacked event.
+                    let (r, thick) = all_day_ring(inner.radii().0, row);
                     let (cx, cy) = inner.center();
-                    let n = 72;
+                    let n = ((r / 2.) as usize).clamp(48, 160);
                     let ring = |rr: f32, k: usize| {
                         let a = k as f32 / n as f32 * TAU;
                         (cx + rr * a.cos(), cy + rr * a.sin())
                     };
-                    let mut pts: Vec<Pt> = (0..=n).map(|k| ring(r + 2., k)).collect();
-                    pts.extend((0..=n).rev().map(|k| ring(r - 2., k)));
+                    let mut pts: Vec<Pt> = (0..=n).map(|k| ring(r + thick * 0.5, k)).collect();
+                    pts.extend((0..=n).rev().map(|k| ring(r - thick * 0.5, k)));
                     Shape::Strip(pts)
                 } else if self.lenses[p].mark == Mark::Heat {
                     // A stripe along the top of the aggregate cell.
@@ -694,6 +693,24 @@ impl CalmView {
                 LabelMode::Arc => {
                     let inner = self.inner(p, cell);
                     if inner.coord != Coord::Polar {
+                        continue;
+                    }
+                    // An all-day ring: its title along the top of the ring.
+                    if let Kind::AllDay { row, .. } = m.target.kind {
+                        let (r_mid, thick) = all_day_ring(inner.radii().0, row);
+                        let size = (thick * 0.7).clamp(8., 11.);
+                        if thick < 9. {
+                            continue;
+                        }
+                        placed.push(i);
+                        if base < 0.02 {
+                            continue;
+                        }
+                        let Some((title, _)) = fit(window, &e.title, &fonts.medium, size, PI * r_mid * 0.8) else { continue };
+                        let color = with_alpha(c.text, base);
+                        let line = shape(window, title, &fonts.medium, size, color);
+                        frame.push(LABELS, Cmd::ArcText { line, color, c: inner.center(), r: r_mid, mid: -FRAC_PI_2, flip: false, size });
+                        n += 1;
                         continue;
                     }
                     let g = m.target.g;
@@ -1399,4 +1416,12 @@ pub fn skip(part: &str) -> bool {
 fn clip_to(r: Rect, cell: Rect) -> Rect {
     let (x0, y0) = (r[0].max(cell[0]), r[1].max(cell[1]));
     [x0, y0, r[2].min(cell[2]).max(x0), r[3].min(cell[3]).max(y0)]
+}
+
+/// An all-day ring's middle radius and thickness on a dial whose centre is `r_in` across:
+/// thick enough to read (and to carry its title on bigger dials), stacking inwards.
+fn all_day_ring(r_in: f32, row: u16) -> (f32, f32) {
+    let thick = (r_in * 0.16).clamp(6., 16.);
+    let r = r_in - 3. - thick * 0.5 - row as f32 * (thick + 2.);
+    (r.max(thick), thick)
 }

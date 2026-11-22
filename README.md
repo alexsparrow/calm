@@ -32,6 +32,10 @@ cargo run --release
 | `R` | Sync calendars now |
 | `E` | Edit the current view (layout, axes, mark, rail: off · energy · daylight) and your energy settings; saved to `views.generated.kdl` |
 | `M`, ☰ top right | Menu: secondary calendars (and any that don't fit the top bar), edit view, sync, theme, help |
+| `N` | New event (next half hour, in your default calendar) |
+| Click an event | Details; for your Google events, edit the title, date, time and location in place (Enter or clicking away saves) |
+| `Delete` | Delete the selected event, with Undo |
+| `O` | Changes: what's staged, waiting, failed or in conflict; commit, revert, preview |
 | `?` | Help · `` ` `` frame stats |
 
 The top bar shows the time here, with the time in each extra zone beneath it.

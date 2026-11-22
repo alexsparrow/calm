@@ -343,6 +343,24 @@ impl Store {
         Ok(())
     }
 
+    /// Resolves a conflict your way: the clashing fields' base becomes their values, so your
+    /// change goes against their latest version.
+    pub fn keep_mine(&self, seq: i64) -> rusqlite::Result<()> {
+        let Some((base, theirs)) = self
+            .conn
+            .query_row("SELECT base, theirs FROM outbox WHERE seq = ?1", [seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))
+            .optional()?
+        else {
+            return Ok(());
+        };
+        let mut base: Value = serde_json::from_str(&base).unwrap_or(json!({}));
+        if let Some(theirs) = theirs.and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            apply_patch(&mut base, &theirs);
+        }
+        self.conn.execute("UPDATE outbox SET base = ?2, theirs = NULL, state = 'pending', last_error = NULL WHERE seq = ?1", params![seq, base.to_string()])?;
+        Ok(())
+    }
+
     /// Commits staged changes: they become pending, to send now.
     pub fn commit(&self, seqs: &[i64]) -> rusqlite::Result<usize> {
         let mut n = 0;
