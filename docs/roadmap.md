@@ -19,15 +19,29 @@ Next, roughly in order:
 1. **Editing, the rest:** the "this event / all events" popover for recurring events, the
    "notify guests?" prompt, picking events from the keyboard, undo of sent changes from the
    history, then "this and following", replies to invitations, and all-day ↔ timed.
-2. **Keybindings and command palette:** all bindings remappable through gpui actions; an opt-in
-   vim layer (`hjkl`, counts, `gg`/`G`) and a `:` command line with fuzzy completion.
+2. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
+   layer (`hjkl` is already in, then counts and `gg`/`G`); the `:` line (date jumps, below) grows
+   into a command line with fuzzy completion (`:view dial`, `:zoom year`, `:new 9-10 Focus`).
 3. **Search and filters:** filters over any event field (title, people, series, location,
    status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
    They're toggled from the top bar, with calendar visibility as one built-in filter, and views
    can declare their own. The drawer gets "only this series" and "only with this person". A
-   filter either hides non-matching events or dims them. Search (`/`) is an ad-hoc filter, with
-   next and previous match across all dates, not only what's on screen. Needs attendees in the
-   `Event` model (the cache already stores them).
+   filter either hides non-matching events or dims them. Needs attendees in the `Event` model
+   (the cache already stores them).
+   - **Search (`/`)** is an ad-hoc filter, typed vim-style.
+     - Typing jumps to the best title match (incremental, like vim's `incsearch`). `Enter` selects
+       it, and `n`/`N` step through matches across all dates, not only what's on screen.
+     - A list of matches opens beside the calendar, which is clickable and moved through with `j`/`k`.
+     - Facet prefixes search beyond titles: `with:` (people), `in:` (calendar), `at:` (location),
+       `series:`, `is:tentative`, and later rule tags. The palette offers them as you type.
+     - Saving a search turns it into a filter.
+   - **Date jumps (`:`)** read the month or year from the view:
+     - `:31` is the 31st of the month in view.
+     - `:12-31` is 31 December of the year in view, and `:2027-03-04` is exact.
+     - `:mon` is the next Monday; `:+2w` and `:-3d` are relative.
+     - Dates clamp, so `:31` in a 30-day month is the 30th.
+     - Open question: whether "in view" or "today" should anchor them (in view is the proposal:
+       you navigated there for a reason).
 4. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
    set, tag or adjust derived properties) whose outputs the grammar can use as channels. Ordered,
    explainable (the drawer shows which rules fired). Small expression language before any embedded

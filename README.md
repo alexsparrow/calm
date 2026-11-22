@@ -95,9 +95,12 @@ Some of what's coming has no equivalent in other calendars yet:
   calendar chips (which become one built-in filter among many), and views can bring filters of
   their own. From an event's details you'll be able to say "only this series" or "only events
   with Sam". Non-matching events can hide or just dim, and they morph out like everything else.
-- **Search.** `/` to type: matches stay bright, everything else dims, and you step between
-  results across the whole range, not just what's on screen. A search is a filter you haven't
-  saved yet.
+- **Search and jump, vim-style.** Press `/` and start typing a title. calm jumps to the best match
+  as you type, and the rest of the calendar dims. A list of matches opens beside it, and `n` and
+  `N` step through them across all dates, not just what's on screen. Prefixes search other facets:
+  `with:sam`, `in:work`, `at:studio`, `series:`. A search is a filter you haven't saved yet.
+- **Jump to a date.** `:` jumps: `:31` to the 31st of the month you're looking at, `:12-31` to
+  New Year's Eve, `:2027-03-04` to an exact day, `:mon` to the coming Monday, `:+2w` two weeks on.
 - **Overrun risk.** Some meetings always run long. Rules will estimate the risk from what's known:
   many guests, a series that habitually overruns, words like "workshop", no gap before the next
   thing. calm then draws a faint tail past the event's end, flags where the tail would run into the
@@ -105,8 +108,8 @@ Some of what's coming has no equivalent in other calendars yet:
 - **Detail around now.** One view that shows today in full, this week as lists and the rest of
   the month as coloured days, coarsening smoothly into the past and future. It would be part of
   the grammar, not a separate mode.
-- **A command palette and a vim layer.** Remappable keys for everything, a `:` command line with
-  fuzzy completion, and optional `hjkl`, counts and `gg`/`G`.
+- **A command palette and a vim layer.** Remappable keys for everything, the `:` line growing into
+  a command line with fuzzy completion (`:view dial`, `:zoom year`), and counts and `gg`/`G`.
 
 Closer to hand:
 
