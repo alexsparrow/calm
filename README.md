@@ -1,15 +1,39 @@
 # calm
 
-A calm, read-only calendar viewer built on a *grammar of time*: every view is a declarative
-spec (coordinates × axes × collision × mark), and switching views morphs the same marks
-rather than cutting to a new screen. See [DESIGN.md](DESIGN.md) for the idea and
-[docs/gpui-spike.md](docs/gpui-spike.md) for why gpui.
+A calendar built on a *grammar of time*: every view is a declarative spec (coordinates × axes
+× collision × mark), and switching views morphs the same marks rather than cutting to a new
+screen. See [DESIGN.md](DESIGN.md) for the idea and [docs/gpui-spike.md](docs/gpui-spike.md) for
+why gpui.
 
-calm shows your calendars read-only from iCal feeds, through an offline cache (see
-[docs/storage-sync.md](docs/storage-sync.md)). With no sources configured, or with `--demo`, it shows
-synthetic data around today's date.
+calm reads Google Calendar (through its API, [docs/google.md](docs/google.md)) and iCal feeds into
+an offline cache ([docs/storage-sync.md](docs/storage-sync.md)), and edits Google events through a
+reviewable outbox of changes ([docs/editing.md](docs/editing.md)). With no sources configured, or
+with `--demo`, it shows synthetic data around today's date.
 
-## Running
+## Installing (Nix)
+
+calm is a flake (Linux for now):
+
+```sh
+nix run github:<you>/calm            # or, from a checkout:
+nix run .                            # build and run
+nix profile install .                # install `calm`
+```
+
+Or add it to a NixOS or home-manager configuration through the overlay:
+
+```nix
+# flake inputs
+inputs.calm.url = "path:/path/to/calm";   # or a git URL
+# then
+nixpkgs.overlays = [ inputs.calm.overlays.default ];
+home.packages = [ pkgs.calm ];            # or environment.systemPackages
+```
+
+The package wraps `calm` with the graphics and windowing libraries gpui loads at runtime (Vulkan,
+Wayland, X11), so it runs as is; a working Vulkan driver is the one thing your system provides.
+
+## Running from source
 
 ```sh
 devenv shell            # or `direnv allow` once
