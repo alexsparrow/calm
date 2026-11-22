@@ -1,185 +1,213 @@
 # calm
 
-A calendar built on a *grammar of time*: every view is a declarative spec (coordinates × axes
-× collision × mark), and switching views morphs the same marks rather than cutting to a new
-screen. See [DESIGN.md](DESIGN.md) for the idea and [docs/gpui-spike.md](docs/gpui-spike.md) for
-why gpui.
+**A calendar built on a grammar of time.**
 
-calm reads Google Calendar (through its API, [docs/google.md](docs/google.md)) and iCal feeds into
-an offline cache ([docs/storage-sync.md](docs/storage-sync.md)), and edits Google events through a
-reviewable outbox of changes ([docs/editing.md](docs/editing.md)). With no sources configured, or
-with `--demo`, it shows synthetic data around today's date.
+Most calendars are a handful of hard-coded screens: day, week, month. In calm, every view is a
+small declarative spec (how days are arranged, what the axes mean, how overlaps resolve, what
+mark each event becomes). Switching views *morphs* the same events from one layout to the next,
+and you can edit the grammar to make views of your own.
 
-## Installing (Nix)
+![The Grid view: a week of events with all-day bars and two time zones](docs/images/grid.png)
 
-calm is a flake (Linux for now):
+<table>
+<tr>
+<td width="50%"><img src="docs/images/dial.png" alt="The Dial view: a day as a clock face, all-day events as rings"></td>
+<td width="50%"><img src="docs/images/density.png" alt="The Density view: a year of days coloured by booked hours"></td>
+</tr>
+<tr>
+<td><b>Dial</b>: a day as a clock face, all-day events as rings.</td>
+<td><b>Density</b>: a year at a glance, each day coloured by how booked it is.</td>
+</tr>
+</table>
+
+## What's in it
+
+- **Views you can change.** Grid, Lanes, Energy, Dial and Density are built in, all written in
+  the same KDL grammar. Press `E` to edit the current one, or write your own in `calm.kdl`.
+- **One continuous zoom** from a day to a year. Events stay events as long as there's room for
+  them, then fold into coloured day cells.
+- **Colour that means something.** Colour by calendar, hours booked, demand, strain or free time.
+  You can also mix them: strength from a measure, hue from the calendar.
+- **Your energy.** A sleep and circadian model (Åkerstedt & Folkard's three-process model) or a
+  curve you draw. Demanding meetings drain it, and calm marks events that ask more than you'll
+  have. It can run as a rail beside each day, alongside daylight.
+- **Time zones.** Extra hour columns, flags for labels, and every event's time in each zone.
+- **Google Calendar, offline.** Incremental sync into a local SQLite cache, so calm opens
+  instantly and works on a plane. iCal feeds and files work too.
+- **Deliberate editing.** Clicks and drags only ever select. To change things you enter a mode,
+  and every change goes through an outbox you can review before it's sent.
+- **Fast.** Built on [gpui](https://www.gpui.rs) (Zed's GPU UI framework), with spring animation
+  throughout. No frames are drawn once everything settles.
+
+## Editing
+
+![New mode: placing an event across Writing and Lunch, flagged in amber](docs/images/new-event.png)
+
+- **New (`N` or +):** click where an event starts, then where it ends.
+- **Adjust (`A` or ↕):** drag an event to move it, or drag its ends to resize it.
+
+Both modes snap to a step you pick (5 minutes to an hour). With **Free time only** on, they stay
+out of busy time. With it off, overlaps show in amber and name what they'd clash with.
+
+Everything works from the keyboard too: arrows move, `Enter` places, `Esc` steps back. Each move
+offers Undo, and in auto mode nothing is sent until the Undo has had its moment.
+
+Every change becomes a queued *op*. calm sends it with a conditional write, so if someone else
+edited the same event, calm merges the two or shows you a conflict. It never overwrites their
+change.
+
+With `sync writes="review"`, changes are staged until you commit them in the changes panel (`O`).
+Agents and scripts using the `calm event` CLI are always staged, so you see what they propose
+before Google does.
+
+The design: [docs/editing.md](docs/editing.md).
+
+## Install
+
+calm is a Nix flake (Linux for now):
 
 ```sh
-nix run github:<you>/calm            # or, from a checkout:
-nix run .                            # build and run
-nix profile install .                # install `calm`
+nix run .                 # from a checkout: build and run
+nix profile install .     # install `calm`
 ```
 
-Or add it to a NixOS or home-manager configuration through the overlay:
+Or add it to NixOS or home-manager through the overlay:
 
 ```nix
-# flake inputs
-inputs.calm.url = "path:/path/to/calm";   # or a git URL
-# then
+inputs.calm.url = "path:/path/to/calm";       # or a git URL
 nixpkgs.overlays = [ inputs.calm.overlays.default ];
-home.packages = [ pkgs.calm ];            # or environment.systemPackages
+home.packages = [ pkgs.calm ];                # or environment.systemPackages
 ```
 
-The package wraps `calm` with the graphics and windowing libraries gpui loads at runtime (Vulkan,
-Wayland, X11), so it runs as is; a working Vulkan driver is the one thing your system provides.
+The package wraps `calm` with the libraries gpui loads at runtime (Vulkan, Wayland, X11). Your
+system needs to provide a working Vulkan driver.
 
-## Running from source
+From source:
 
 ```sh
-devenv shell            # or `direnv allow` once
-cargo run --release
+devenv shell              # or `direnv allow` once
+cargo run --release       # `--demo` for synthetic data
 ```
 
-| Keys | |
-|---|---|
-| `1`–`9`, `Tab` | Switch view (Grid · Lanes · Energy · Dial · Density by default) |
-| Ctrl+scroll, `−` `=`, right-edge slider | Zoom: Day · Week · Month · Quarter · Year (continuous, snaps to stops) |
-| `←` `→` | Previous / next at the current zoom (day, week, month…) |
-| Scroll, Shift+scroll | Scroll hours when a single day/week is in view, otherwise scroll through time |
-| Alt+scroll | Zoom the hour window |
-| `T` | Today |
-| `D` | Toggle light / dark (follows the system by default) |
-| `C` / `B` / `V` | Cycle colour measure · by calendar (split cells, or calendar hues at the measure's strength) · cycle composition |
-| `G` | Day-span glyph in aggregate cells |
-| `F`, click the hour labels | Toggle between the default hours and the full 24 |
-| `Z` | Show / hide extra time zones |
-| `R` | Sync calendars now |
-| `E` | Edit the current view (layout, axes, mark, rail: off · energy · daylight) and your energy settings; saved to `views.generated.kdl` |
-| `M`, ☰ top right | Menu: secondary calendars (and any that don't fit the top bar), edit view, sync, theme, help |
-| `N` | New event (next half hour, in your default calendar) |
-| Click an event | Details; for your Google events, edit the title, date, time and location in place (Enter or clicking away saves) |
-| `Delete` | Delete the selected event, with Undo |
-| `O` | Changes: what's staged, waiting, failed or in conflict; commit, revert, preview |
-| `?` | Help · `` ` `` frame stats |
+## Getting started
 
-The top bar shows the time here, with the time in each extra zone beneath it.
-
-### Configuration
-
-Everything lives in one file, `~/.config/calm/calm.kdl`, applied live as you save:
+1. **Connect Google:** set up an OAuth client once ([docs/google.md](docs/google.md)), then run
+   `calm google login you@gmail.com`.
+2. **Point calm at it** in `~/.config/calm/calm.kdl`. Changes to this file apply as you save.
 
 ```kdl
+source "Google" google="you@gmail.com"
+
+// Names, colours and order for the chips in the top bar; secondary ones live in the ☰ menu.
+calendar "you@gmail.com" label="Personal"
+calendar "Work" color="slate" demand=0.6
+calendar "Holidays in the United Kingdom" label="UK holidays" secondary=#true
+
 zones "Asia/Manila" "Europe/London" {
     label "Europe/London" short="🇬🇧" long="London"
 }
-source "Personal" url-file="~/.config/calm/secrets/personal.url" calendar="Personal" refresh="15m"
+
+sync writes="review"        // stage edits until you commit them (default: "auto")
 window opacity=0.8
-theme "system"
 ```
 
-Every view is declared in KDL too: the built-ins live in `assets/views.kdl`, and calm.kdl can add,
-replace, hide and reorder views. Views expose params (the colour controls, Day span) that calm turns
-into controls and keys. `E` opens an editor for the current view; its changes go to
-`views.generated.kdl`, loaded after calm.kdl, so your own file is never rewritten.
+With no sources configured, calm shows synthetic data around today.
+
+`calm config check` validates the file, with file:line:col errors and "did you mean"
+suggestions. `calm config dump` prints everything in effect, built-in views included, ready to
+copy and change. Reference: [docs/config.md](docs/config.md).
+
+## Keys
+
+**Getting around**
+
+| | |
+|---|---|
+| `1`–`9`, `Tab` | Switch view |
+| Ctrl+scroll, `−` `=`, bottom right | Zoom: Day · Week · Month · Quarter · Year |
+| `←` `→` | Previous / next at the current zoom |
+| Scroll, Shift+scroll | Scroll hours (a day or week in view), otherwise time |
+| Alt+scroll | Zoom the hour window |
+| `F`, click the hour labels | Default hours ↔ the full 24 |
+| `T` | Today |
+| Click | An event's details · zoom into an overview cell |
+
+**Looking**
+
+| | |
+|---|---|
+| `C` · `B` · `V` | Colour measure · by calendar · composition (each view lists its own) |
+| `G` | Day-span glyph in overview cells |
+| `Z` | Extra time zones |
+| `D` | Light / dark (follows the system by default) |
+| `E` | Edit this view (and your energy settings) |
+| `M`, ☰ | Menu: secondary calendars and actions |
+
+**Changing**
+
+| | |
+|---|---|
+| `N`, + | New event: click its start, then its end |
+| `A`, ↕ | Adjust: drag to move, drag the ends to resize |
+| In a mode | `[` `]` snap step · `F` free time only · arrows/`hjkl` move · `Shift` resizes · `Enter` places · `Esc` steps back |
+| Click an event | Edit its title, date, times and location in the drawer |
+| `Delete` | Delete the selected event, with Undo |
+| `O` | Changes: staged, waiting, failed or in conflict; commit, revert, preview |
+| `R` | Sync now |
+| `?` | Help · `` ` `` frame stats |
+
+## The command line
 
 ```sh
-calm config check [--json]                 # validate, with file:line:col errors
-calm config dump                           # the effective config, built-ins included
-calm config set Grid mark pill             # the editor's operations, for scripts and agents
+calm event list --day tomorrow                      # with IDs
+calm event add "Focus" --start "tomorrow 9:00" --duration 90m
+calm event move <id> --start 10:30                  # --all for a whole series
+calm event delete <id>
+calm outbox                                         # what's staged, waiting or stuck
+calm commit --all                                   # asks at a terminal; --yes otherwise
+calm discard <n>
+
+calm config set Grid mark pill                      # the view editor's operations
 calm config duplicate Grid · calm config reset "Grid copy"
 ```
 
-Reference: [docs/config.md](docs/config.md).
+Changes from the command line appear in the app at once, dimmed until they're committed and sent.
 
-### Changes from the command line
+## Documentation
 
-Google calendars can be edited from the command line. Every change is staged until you commit it,
-so an agent can propose changes for you to review:
+| | |
+|---|---|
+| [DESIGN.md](DESIGN.md) | The grammar of time: the idea behind calm |
+| [docs/config.md](docs/config.md) | Everything `calm.kdl` can say: views, params, calendars, energy, themes, sync |
+| [docs/editing.md](docs/editing.md) | Editing and write sync: the outbox, merging, review, modes |
+| [docs/google.md](docs/google.md) | Connecting a Google account |
+| [docs/storage-sync.md](docs/storage-sync.md) | The offline cache and read sync |
+| [docs/roadmap.md](docs/roadmap.md) | What's next |
+| [docs/gpui-spike.md](docs/gpui-spike.md) | Why gpui |
 
-```sh
-calm event list --day tomorrow          # with IDs
-calm event add "Focus" --start "tomorrow 9:00" --duration 90m
-calm event move <id> --start 10:30      # --all for a whole recurring series
-calm event delete <id>
-calm outbox                             # what's staged, waiting, failed or in conflict
-calm commit --all                       # asks at a terminal; --yes otherwise
-calm discard <n>
-```
-
-Changes show in calm straight away (dimmed with a dot until Google confirms them) and are sent
-conditionally, so someone else's concurrent change is merged or shown as a conflict, never
-overwritten. Design: [docs/editing.md](docs/editing.md).
-
-### Calendars
-
-For Google, sign in once and calm reads every calendar in your account, free/busy-only shares
-included, and keeps them in sync incrementally: `calm google login you@gmail.com`, then
-`source "Google" google="you@gmail.com"`. Setup (your own OAuth client): [docs/google.md](docs/google.md).
-
-Each `source` in calm.kdl is a calendar feed: `url-file=` (a file holding the secret iCal address,
-chmod 600), `url=`, or `path=` for a local `.ics`; `refresh=` how often to fetch. `calendar=` says which
-calendar its events belong to. Calendars are the chips in the top bar; declare them to set their
-colour and how demanding their events are:
-
-```kdl
-calendar "Work" color="slate" demand=0.6
-calendar "Home" color="sage" demand=0.3
-source "Work" url-file="~/.config/calm/secrets/work.url" calendar="Work"
-```
-
-Without `calendar` nodes, each source's `calendar=` (or name) becomes one, coloured from the
-palette. Events
-are cached in `~/.local/state/calm/calendar.sqlite3`, so calm opens instantly and works offline;
-the top bar shows when each source last synced or why it failed. `R` syncs now. A failed or
-suspicious fetch (an error page, a feed that suddenly loses most of its events) never replaces
-the cached copy.
-
-### Time zones
-
-Extra zones are a global setting: `zones "America/New_York" "Europe/London"` in calm.kdl, or
-`--zones`. The primary zone is the system's. Grid gets a column of
-hour labels per zone, and Lanes and Energy get a row per zone; a trailing `+` or `−` means the next or
-previous day. Each view's grammar can narrow labelling to the primary zone (`zones: primary`, used
-by Dial). The details drawer shows an event's time in every zone.
-
-Each zone can have a short label for the axes (a flag works well) and a long name, shown with the
-current time and UTC offset when you hover a zone label: `label "Asia/Manila" short="🇵🇭" long="Manila"`
-inside `zones`.
-
-Whichever configured zone you are currently in is dropped, so the same config works wherever you are.
-
-The older `~/.config/calm/config` and `sources` files are still read when calm.kdl doesn't set zones
-or sources.
-
-Click an event to see its details. Click an overview cell (a month or year box) to zoom into it. The calendar
-chips in the top bar show and hide calendars, and the remaining lanes widen to fill.
-
-### Developer flags
+## Development
 
 | Flag | |
 |---|---|
 | `--lens N`, `--zoom STOP`, `--theme dark\|light`, `--offset DAYS`, `--zones A,B` | Start state |
-| `--color MEASURE[:scale\|:calendar\|:COMPOSE]`, `--span`, `--edit` | Start colour, day-span glyph, view editor open |
-| `--translucent`, `--opacity X`, `--blur` | Translucent window: 0.8 background opacity by default, optional compositor blur |
-| `--still` | Springs settle in one frame (for screenshots) |
-| `--hover x,y`, `--select x,y` | Scripted pointer, applied once the window size settles |
-| `--cycle` | Advance lenses every 1.1 s |
+| `--color MEASURE[:scale\|:calendar\|:COMPOSE]`, `--span` | Start colouring, day-span glyph |
+| `--edit`, `--menu`, `--changes`, `--controls`, `--picker N`, `--mode new\|adjust` | Open a panel or mode |
+| `--translucent`, `--opacity X`, `--blur` | Translucent window |
+| `--still` | Springs settle in one frame (screenshots) |
+| `--hover x,y`, `--select x,y` | Scripted pointer once the window settles; in a mode, the press and the pointer |
 | `--demo` | Synthetic data even when sources are configured |
-| `--bench` | 2× data (`CALM_MULT` to change), scripted lens + zoom tour for 22 s, print frame/CPU percentiles. `CALM_SKIP=decor,marks,labels,chrome` disables parts for bisection |
+| `--cycle` · `--bench` | Cycle views · scripted tour printing frame and CPU percentiles (`CALM_MULT`, `CALM_SKIP=decor,marks,labels,chrome`) |
 
-## Layout
+Where things live:
 
 - `src/spec.rs`: the grammar: channels, params, and how values resolve.
-- `src/viewconf.rs`: the KDL loader (views, params, settings), validation, `calm config`, and the editor's writes.
-- `assets/views.kdl`: the built-in views.
-- `src/layout.rs`: collision and projection into *inner* cell coordinates. Every mark belongs to a day
+- `src/viewconf.rs`, `assets/views.kdl`: the KDL loader and the built-in views.
+- `src/layout.rs`: collision and projection into in-cell coordinates. Every mark belongs to a day
   cell, so zooming and scrolling never relayout.
-- `src/view/mod.rs`: springs, input, and the render loop. No frames are requested once
-  everything settles.
-- `src/view/arrange.rs`: the facet arrangement (strip → lines → bands, blended) and in-cell coordinates.
-- `src/view/scene.rs`: screen-space morphs, marks, label placement, arc text,
-  axes, and paint.
-- `src/view/chrome.rs`: top bar, lens switcher, tooltip, drawer, and help.
-- `patches/gpui`: gpui 0.2.2 plus `Window::paint_glyph_rotated`, which sets text along arcs.
-- `patches/xattr`: a build fix for current `libc`.
+- `src/view/`: the app. `mod.rs` holds springs, input and the render loop; `arrange.rs` the day
+  arrangement (strip → lines → bands); `scene.rs` marks, morphs, labels and paint; `chrome.rs` the
+  bars, drawer and panels; `editing.rs` and `modes.rs` editing.
+- `src/energy.rs`, `src/sun.rs`: the energy model and daylight.
+- `src/sync/`: the cache, Google and iCal sync, and the outbox.
+- `patches/gpui`: gpui 0.2.2 plus `Window::paint_glyph_rotated`, for text along arcs.
 - `assets/fonts`: Inter (OFL), subset to Latin.
