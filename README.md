@@ -80,6 +80,40 @@ before Google does.
 
 The design: [docs/editing.md](docs/editing.md).
 
+## Planned
+
+Some of what's coming has no equivalent in other calendars yet:
+
+- **Rules.** Declarative rules that read an event (its title, guests, calendar, time) and derive
+  things about it: a tag, how demanding it is, which project it belongs to. Their outputs become
+  channels the grammar can use, so a view can colour by project or hide everything tagged
+  "optional". Rules apply in order and explain themselves: the drawer shows which ones fired.
+  They use a small expression language, not embedded scripting.
+- **Overrun risk.** Some meetings always run long. Rules will estimate the risk from what's known:
+  many guests, a series that habitually overruns, words like "workshop", no gap before the next
+  thing. calm then draws a faint tail past the event's end, flags where the tail would run into the
+  next event, and adds the extra strain to your energy curve.
+- **Detail around now.** One view that shows today in full, this week as lists and the rest of
+  the month as coloured days, coarsening smoothly into the past and future. It would be part of
+  the grammar, not a separate mode.
+- **A command palette and a vim layer.** Remappable keys for everything, a `:` command line with
+  fuzzy completion, and optional `hjkl`, counts and `gg`/`G`.
+
+Closer to hand:
+
+- Editing a recurring event: "this event, or all events?" when you move one occurrence, and later
+  "this and following".
+- A "notify guests?" prompt when you move a meeting, instead of the drawer's setting.
+- Picking events from the keyboard, so every edit works without the mouse.
+- `Ctrl+Z` and redo for any change, from calm's history of changes (today, Undo lives in the toast).
+- Replying to invitations, and converting events between all-day and timed.
+- More calendar services through the same outbox: CalDAV first (iCloud, Fastmail).
+- Hiding boilerplate notes repeated across unrelated events (meeting-link footers, Google's
+  auto-event notice).
+- macOS packaging, and a home-manager module for calm's config.
+
+The longer list, with what's done: [docs/roadmap.md](docs/roadmap.md).
+
 ## Install
 
 calm is a Nix flake (Linux for now):
