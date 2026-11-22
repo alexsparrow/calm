@@ -89,6 +89,15 @@ Some of what's coming has no equivalent in other calendars yet:
   channels the grammar can use, so a view can colour by project or hide everything tagged
   "optional". Rules apply in order and explain themselves: the drawer shows which ones fired.
   They use a small expression language, not embedded scripting.
+- **Filters as configurable as views.** Today you can only show or hide calendars. Filters will
+  match on anything about an event: its title, people, series, location, status, time, or a tag
+  from your rules. They're declared in `calm.kdl` like views, toggled from the top bar like the
+  calendar chips (which become one built-in filter among many), and views can bring filters of
+  their own. From an event's details you'll be able to say "only this series" or "only events
+  with Sam". Non-matching events can hide or just dim, and they morph out like everything else.
+- **Search.** `/` to type: matches stay bright, everything else dims, and you step between
+  results across the whole range, not just what's on screen. A search is a filter you haven't
+  saved yet.
 - **Overrun risk.** Some meetings always run long. Rules will estimate the risk from what's known:
   many guests, a series that habitually overruns, words like "workshop", no gap before the next
   thing. calm then draws a faint tail past the event's end, flags where the tail would run into the

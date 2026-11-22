@@ -21,14 +21,21 @@ Next, roughly in order:
    history, then "this and following", replies to invitations, and all-day ↔ timed.
 2. **Keybindings and command palette:** all bindings remappable through gpui actions; an opt-in
    vim layer (`hjkl`, counts, `gg`/`G`) and a `:` command line with fuzzy completion.
-3. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
+3. **Search and filters:** filters over any event field (title, people, series, location,
+   status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
+   They're toggled from the top bar, with calendar visibility as one built-in filter, and views
+   can declare their own. The drawer gets "only this series" and "only with this person". A
+   filter either hides non-matching events or dims them. Search (`/`) is an ad-hoc filter, with
+   next and previous match across all dates, not only what's on screen. Needs attendees in the
+   `Event` model (the cache already stores them).
+4. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
    set, tag or adjust derived properties) whose outputs the grammar can use as channels. Ordered,
    explainable (the drawer shows which rules fired). Small expression language before any embedded
    scripting.
-4. **CalDAV** (iCloud, Fastmail) behind the same outbox.
-5. **View presets:** a library of views to share, and an editor where the plain-language
+5. **CalDAV** (iCloud, Fastmail) behind the same outbox.
+6. **View presets:** a library of views to share, and an editor where the plain-language
    grammar description is directly editable.
-6. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
+7. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
    home-manager module for calm's config.
 
 ## Ideas
