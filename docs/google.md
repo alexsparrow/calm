@@ -5,7 +5,10 @@ You get every calendar in your list (with Google's names and colours), calendars
 you as free/busy only, and incremental sync: after the first fetch Google sends only what
 changed, so calm checks every five minutes.
 
-Access is read-only (`calendar.readonly`). calm talks to Google directly. Tokens stay on your
+calm asks for `calendar.readonly` (calendars, free/busy) and `calendar.events` (to edit
+events; see [editing.md](editing.md)). If you signed in before editing existed, run
+`calm google login` again to allow it: until then, reading works and edits wait, marked
+"sign in again to allow editing". calm talks to Google directly. Tokens stay on your
 machine in `~/.config/calm/secrets/` (mode 600).
 
 ## One-time setup: your own OAuth client

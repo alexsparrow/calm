@@ -2,9 +2,11 @@
 //! on background threads. The UI only ever reads the store. See
 //! `docs/storage-sync.md` for the design.
 
+pub mod cli;
 mod config;
 pub mod google;
 pub mod ics;
+pub mod outbox;
 pub mod store;
 
 use std::path::PathBuf;
@@ -238,6 +240,8 @@ pub fn start(sources: Vec<Source>) -> (Receiver<Update>, Sender<Command>) {
         .spawn(move || {
             let path = db_path();
             if let Ok(mut store) = Store::open(&path) {
+                // Changes left mid-send by a quit or crash go out again (sends are idempotent).
+                let _ = store.recover_sending();
                 let names: Vec<String> = sources.iter().map(|s| s.name.clone()).collect();
                 let _ = store.retain_sources(&names);
             }

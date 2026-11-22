@@ -63,6 +63,25 @@ calm config duplicate Grid · calm config reset "Grid copy"
 
 Reference: [docs/config.md](docs/config.md).
 
+### Changes from the command line
+
+Google calendars can be edited from the command line. Every change is staged until you commit it,
+so an agent can propose changes for you to review:
+
+```sh
+calm event list --day tomorrow          # with IDs
+calm event add "Focus" --start "tomorrow 9:00" --duration 90m
+calm event move <id> --start 10:30      # --all for a whole recurring series
+calm event delete <id>
+calm outbox                             # what's staged, waiting, failed or in conflict
+calm commit --all                       # asks at a terminal; --yes otherwise
+calm discard <n>
+```
+
+Changes show in calm straight away (dimmed with a dot until Google confirms them) and are sent
+conditionally, so someone else's concurrent change is merged or shown as a conflict, never
+overwritten. Design: [docs/editing.md](docs/editing.md).
+
 ### Calendars
 
 For Google, sign in once and calm reads every calendar in your account, free/busy-only shares

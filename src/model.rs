@@ -125,6 +125,8 @@ pub struct Event {
     pub strain: f32,
     /// For all-day events, this day's piece of it; `None` for timed events.
     pub all_day: Option<AllDay>,
+    /// Set while a change to it is queued (see `sync::outbox`).
+    pub sync: Option<crate::sync::outbox::State>,
 }
 
 /// One day's piece of an all-day event. Multi-day events are a piece per day (one
@@ -251,6 +253,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             group: events.len() as u32,
             strain: 0.,
             all_day: None,
+            sync: None,
         });
     };
 
@@ -331,6 +334,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             group: group(events),
             strain: 0.,
             all_day: None,
+            sync: None,
         };
         events.extend(all_day_pieces(e, first, first + days));
     };
@@ -492,6 +496,7 @@ pub fn from_occurrences(occurrences: &[crate::sync::store::Stored], calendar_of:
             group: group as u32,
             strain: 0.,
             all_day: None,
+            sync: s.sync,
         };
         if o.all_day {
             // End is exclusive; a zero-length all-day event still covers its date.
@@ -546,6 +551,7 @@ mod all_day_tests {
             group,
             strain: 0.,
             all_day: None,
+            sync: None,
         }
     }
 

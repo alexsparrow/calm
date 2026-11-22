@@ -1405,13 +1405,20 @@ struct Sync {
     sources: Vec<crate::sync::Source>,
     states: Vec<crate::sync::store::SourceState>,
     problems: Vec<String>,
+    /// The outbox as last seen: its fingerprint, and each change's state.
+    outbox_seen: String,
+    outbox: Vec<crate::sync::outbox::State>,
 }
 
 /// Reads every configured source's occurrences from the offline cache.
 fn load_live(sources: &[crate::sync::Source], calendars: &[Calendar]) -> Dataset {
     let span = model::generate_span();
     let store = crate::sync::store::Store::open(&crate::sync::db_path()).ok();
-    let stored = store.as_ref().and_then(|s| s.occurrences(span.0, span.1).ok()).unwrap_or_default();
+    let mut stored = store.as_ref().and_then(|s| s.occurrences(span.0, span.1).ok()).unwrap_or_default();
+    // Queued changes show as if done, marked, until the server confirms them.
+    if let Some(s) = &store {
+        crate::sync::google::overlay(s, &mut stored, chrono::Utc::now(), true);
+    }
     // Which calendar each stored key belongs to: an iCal source's own, or for a Google
     // account (`Account/calendar-id`) the calendar named like that Google calendar.
     let index = |name: &str| calendars.iter().position(|c| c.name.eq_ignore_ascii_case(name));
@@ -1435,6 +1442,15 @@ impl CalmView {
         while let Ok(update) = sync.rx.try_recv() {
             any = true;
             changed |= matches!(update, crate::sync::Update::Changed);
+        }
+        // Changes queued elsewhere (the command line) or sent since: show them.
+        if let Ok(store) = crate::sync::store::Store::open(&crate::sync::db_path()) {
+            let seen = store.outbox_fingerprint();
+            if seen != sync.outbox_seen {
+                sync.outbox = store.ops().unwrap_or_default().iter().map(|o| o.state).collect();
+                sync.outbox_seen = seen;
+                (any, changed) = (true, true);
+            }
         }
         if !any {
             // Ages in the status line ("3 min ago") still move.
@@ -1461,6 +1477,20 @@ impl CalmView {
         let sync = self.sync.as_ref()?;
         if let Some(p) = sync.problems.first() {
             return Some((p.clone(), true));
+        }
+        // Queued changes come first: they're yours.
+        use crate::sync::outbox::State as Q;
+        let count = |states: &[Q]| sync.outbox.iter().filter(|s| states.contains(s)).count();
+        let plural = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        let (attention, staged, waiting) = (count(&[Q::Failed, Q::Conflict]), count(&[Q::Draft]), count(&[Q::Pending, Q::Sending]));
+        if attention > 0 {
+            return Some((format!("{} need{} attention", plural(attention, "change"), if attention == 1 { "s" } else { "" }), true));
+        }
+        if staged > 0 {
+            return Some((format!("{} staged", plural(staged, "change")), false));
+        }
+        if waiting > 0 {
+            return Some((format!("{} waiting to sync", plural(waiting, "change")), false));
         }
         let now = chrono::Utc::now().timestamp();
         let ago = |t: i64| match (now - t).max(0) / 60 {
@@ -1600,7 +1630,7 @@ struct Pinned {
 fn start_sync(sources: &[crate::sync::Source], problems: &[String]) -> Sync {
     let (rx, commands) = crate::sync::start(sources.to_vec());
     let states = crate::sync::store::Store::open(&crate::sync::db_path()).and_then(|s| s.states()).unwrap_or_default();
-    Sync { rx, commands, sources: sources.to_vec(), states, problems: problems.to_vec() }
+    Sync { rx, commands, sources: sources.to_vec(), states, problems: problems.to_vec(), outbox_seen: String::new(), outbox: Vec::new() }
 }
 
 impl CalmView {

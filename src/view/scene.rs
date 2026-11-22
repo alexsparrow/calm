@@ -399,6 +399,17 @@ impl CalmView {
                 fill = c.dot.blend(with_alpha(th.ink, 0.15 * hover));
             }
             fill.a = alpha * if tentative { 0.75 } else { 1. };
+            // Queued changes: dimmed until confirmed; outlined when they need you.
+            use crate::sync::outbox::State as Sync;
+            let unsent = matches!(e.sync, Some(Sync::Draft | Sync::Pending | Sync::Sending));
+            if unsent {
+                fill.a *= 0.7;
+            }
+            let attention = match e.sync {
+                Some(Sync::Failed) => Some(th.now),
+                Some(Sync::Conflict) => Some(gpui::hsla(38. / 360., 0.85, 0.52, 1.)),
+                _ => None,
+            };
             let (w, h) = (b[2] - b[0], b[3] - b[1]);
             match &shape {
                 Shape::Rect(r) => {
@@ -414,7 +425,9 @@ impl CalmView {
                     if hover > 0.01 {
                         frame.push(MARKS, Cmd::Shadow { b: *r, r: radius, color: with_alpha(th.shadow, hover * alpha) });
                     }
-                    let border = if m.target.conflict {
+                    let border = if let Some(c) = attention {
+                        Some((with_alpha(c, alpha), 1.75, false))
+                    } else if m.target.conflict {
                         Some((with_alpha(th.now, 0.8 * alpha), 1.25, false))
                     } else if selected {
                         Some((with_alpha(c.edge, alpha), 1.5, false))
@@ -424,6 +437,11 @@ impl CalmView {
                         None
                     };
                     frame.push(MARKS, Cmd::Quad { b: *r, r: radius, color: fill, border });
+                    if unsent && w > 14. && h > 10. {
+                        // A small dot: waiting to sync.
+                        let d = [r[2] - 8., r[1] + 4., r[2] - 4., r[1] + 8.];
+                        frame.push(FRONT, Cmd::Quad { b: d, r: 2., color: with_alpha(th.ink, 0.55 * alpha), border: None });
+                    }
                     // Accent bar on blocks and list rows: the calendar's colour, quietly.
                     let accent = matches!(m.target.kind, Kind::Rect | Kind::Row { .. });
                     if accent && w > 10. && h > 6. && !tentative {

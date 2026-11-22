@@ -28,6 +28,10 @@ fn main() {
     if args.first().map(String::as_str) == Some("config") {
         std::process::exit(viewconf::cli(&args[1..]));
     }
+    // Changes from the command line: `calm event …`, `calm outbox`, `calm commit`, `calm discard`.
+    if matches!(args.first().map(String::as_str), Some("event" | "outbox" | "commit" | "discard")) {
+        std::process::exit(sync::cli::run(&args));
+    }
     // `calm google login ADDRESS`: sign in to Google Calendar in the browser.
     if args.first().map(String::as_str) == Some("google") {
         std::process::exit(match (args.get(1).map(String::as_str), args.get(2)) {

@@ -83,6 +83,41 @@ CREATE TABLE remote_calendars (
     position INTEGER NOT NULL,
     PRIMARY KEY (source, id)
 );
+"#, r#"
+-- Editing: provider IDs per occurrence, the outbox of changes, and a history of commits.
+ALTER TABLE occurrences ADD COLUMN ref TEXT;
+CREATE TABLE outbox (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    op_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    calendar TEXT NOT NULL,
+    event TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    series TEXT,
+    original TEXT,
+    base TEXT NOT NULL,
+    patch TEXT NOT NULL,
+    notify TEXT NOT NULL,
+    state TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER,
+    last_error TEXT,
+    theirs TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX outbox_event ON outbox (source, calendar, event);
+CREATE TABLE history (
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    calendar TEXT NOT NULL,
+    event TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    before TEXT,
+    after TEXT,
+    origin TEXT NOT NULL
+);
 "#];
 
 /// Per-source sync bookkeeping.
@@ -133,10 +168,12 @@ pub struct Run {
 pub struct Stored {
     pub source: String,
     pub occ: Occurrence,
+    /// Set when a queued change touches it (see `outbox`).
+    pub sync: Option<super::outbox::State>,
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(super) conn: Connection,
 }
 
 fn list(v: &[String]) -> String {
@@ -264,6 +301,17 @@ impl Store {
 
     /// Replaces everything for one source, and its state, in one transaction.
     pub fn replace(&mut self, state: &SourceState, components: &[Component], occurrences: &[Occurrence]) -> rusqlite::Result<()> {
+        self.replace_then(state, components, occurrences, |_| Ok(()))
+    }
+
+    /// `replace`, plus `then` in the same transaction (e.g. retiring the change that caused it).
+    pub fn replace_then(
+        &mut self,
+        state: &SourceState,
+        components: &[Component],
+        occurrences: &[Occurrence],
+        then: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<()>,
+    ) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM components WHERE source = ?1", [&state.name])?;
         tx.execute("DELETE FROM occurrences WHERE source = ?1", [&state.name])?;
@@ -286,8 +334,8 @@ impl Store {
             }
             let mut occ = tx.prepare(
                 "INSERT OR REPLACE INTO occurrences (source, uid, start, end, all_day, summary, location, description,
-                     status, transp, organizer, attendees, categories)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                     status, transp, organizer, attendees, categories, ref)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             for o in occurrences {
                 occ.execute(params![
@@ -303,11 +351,13 @@ impl Store {
                     o.transp,
                     o.organizer,
                     list(&o.attendees),
-                    list(&o.categories)
+                    list(&o.categories),
+                    o.ref_id
                 ])?;
             }
         }
         Self::write_state(&tx, state)?;
+        then(&tx)?;
         tx.commit()
     }
 
@@ -370,7 +420,7 @@ impl Store {
     pub fn occurrences(&self, from: DateTime<Utc>, to: DateTime<Utc>) -> rusqlite::Result<Vec<Stored>> {
         let mut stmt = self.conn.prepare(
             "SELECT source, uid, start, end, all_day, summary, location, description, status, transp, organizer,
-                    attendees, categories
+                    attendees, categories, ref
              FROM occurrences WHERE end >= ?1 AND start <= ?2 ORDER BY start",
         )?;
         let ts = |s: i64| DateTime::from_timestamp(s, 0).unwrap_or_default();
@@ -390,7 +440,9 @@ impl Store {
                     organizer: r.get(10)?,
                     attendees: unlist(r.get(11)?),
                     categories: unlist(r.get(12)?),
+                    ref_id: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
                 },
+                sync: None,
             })
         })?
         .collect()

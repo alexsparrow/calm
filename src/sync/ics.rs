@@ -320,9 +320,25 @@ pub struct Occurrence {
     pub organizer: Option<String>,
     pub attendees: Vec<String>,
     pub categories: Vec<String>,
+    /// The provider's ID for this occurrence: the event's own, or for an instance of a
+    /// series `{series}_{original start}` (Google's instance IDs; what an edit targets).
+    pub ref_id: String,
+}
+
+/// `{series}_{20261124T090000Z}`, or `{series}_{20261124}` for all-day: an instance's ID.
+pub fn instance_id(series: &str, original: DateTime<Utc>, all_day: Option<NaiveDate>) -> String {
+    match all_day {
+        Some(d) => format!("{series}_{}", d.format("%Y%m%d")),
+        None => format!("{series}_{}", original.format("%Y%m%dT%H%M%SZ")),
+    }
 }
 
 fn occurrence(c: &Component, start: DateTime<Utc>, all_day_date: Option<NaiveDate>) -> Occurrence {
+    let ref_id = match (c.recurrence_id, &c.rrule) {
+        (Some(original), _) => instance_id(&c.uid, original, if let Moment::Date(_) = c.start { Some(original.date_naive()) } else { None }),
+        (None, Some(_)) => instance_id(&c.uid, start, all_day_date),
+        (None, None) => c.uid.clone(),
+    };
     let (start, end) = match all_day_date {
         Some(d) => {
             let s = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
@@ -343,6 +359,7 @@ fn occurrence(c: &Component, start: DateTime<Utc>, all_day_date: Option<NaiveDat
         organizer: c.organizer.clone(),
         attendees: c.attendees.clone(),
         categories: c.categories.clone(),
+        ref_id,
     }
 }
 

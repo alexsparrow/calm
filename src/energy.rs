@@ -174,6 +174,7 @@ mod tests {
             group: 0,
             strain: 0.,
             all_day: None,
+            sync: None,
         };
         let events = [meeting(9., 3.)];
         let curve = m.day(events.iter());
