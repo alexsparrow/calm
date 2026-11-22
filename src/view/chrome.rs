@@ -139,6 +139,7 @@ impl CalmView {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_none()
                     .gap(px(1.))
                     .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).line_height(px(26.)).child(title))
                     .child(
@@ -164,11 +165,14 @@ impl CalmView {
                     .items_center()
                     .gap(px(6.))
                     .min_w_0()
-                    .child(div().flex_none().child(self.clock(self.viewport.0 < 640.)))
+                    .child(div().flex_none().child(self.clock(self.viewport.0 < 800.)))
                     .child(div().w(px(10.)).flex_none())
                     // If even the dots don't fit, the chips clip rather than push the buttons out.
                     .child(div().flex().items_center().gap(px(6.)).min_w_0().flex_shrink().overflow_hidden().children(chips))
                     .child(div().w(px(14.)).flex_none())
+                    .child(self.mode_button("mode-new", "+", self.creating(), true, cx))
+                    .child(self.mode_button("mode-adjust", "\u{2195}", self.adjusting(), false, cx))
+                    .child(div().w(px(8.)).flex_none())
                     .when(can_pan, |d| {
                         d.child(self.button("prev", "‹").flex_none().text_size(px(18.)).on_click(cx.listener(|this, _, _, cx| {
                             this.pan(-1);
@@ -768,7 +772,9 @@ impl CalmView {
             ("T", "Jump to today"),
             ("E", "Edit this view"),
             ("M", "Menu: more calendars, actions"),
-            ("N", "New event"),
+            ("N, +", "New event: click its start, then its end"),
+            ("A, \u{2195}", "Adjust: drag to move, drag ends to resize"),
+            ("[ ]  F", "In a mode: snap step · free time only"),
             ("Delete", "Delete the selected event"),
             ("O", "Changes waiting to sync"),
             ("Z", "Extra time zones"),
@@ -1163,6 +1169,21 @@ impl CalmView {
 }
 
 impl CalmView {
+    /// + (new) and ↕ (adjust) at the top: enter or leave an editing mode.
+    fn mode_button(&self, id: &'static str, label: &'static str, on: bool, create: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        let th = self.theme;
+        self.button(id, label)
+            .flex_none()
+            .w(px(32.))
+            .justify_center()
+            .text_size(px(17.))
+            .when(on, |d| d.bg(with_alpha(th.now, 0.16)).text_color(th.ink))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_mode(create);
+                cx.notify();
+            }))
+    }
+
     /// Three bars, top right: opens the menu.
     fn hamburger(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let th = self.theme;
@@ -1240,7 +1261,13 @@ impl CalmView {
                 .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
                 .child(action("menu-new", "New event", "N").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
-                    this.new_event(cx);
+                    this.toggle_mode(true);
+                    cx.notify();
+                })))
+                .child(action("menu-adjust", "Move & resize", "A").on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_on = false;
+                    this.toggle_mode(false);
+                    cx.notify();
                 })))
                 .child(action("menu-changes", "Changes", "O").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
@@ -1289,9 +1316,9 @@ impl CalmView {
         let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { s.chars().take(n - 1).chain(std::iter::once('…')).collect() } else { s.to_string() } };
         let status_len = self.status_line().map_or(0, |(t, _)| t.chars().count() + 3);
         let title_w = (title.chars().count() as f32 * 11.5).max((subtitle.chars().count() + status_len) as f32 * 6.6);
-        // Measured: the clock column ~70, spacers 24, ‹ Today › and ☰ ~175, padding 56, gap 16.
-        let clock_w = if self.viewport.0 < 640. { 50. } else { 70. };
-        let room = self.viewport.0 - 56. - title_w - clock_w - 24. - 175. - 16.;
+        // Measured: the clock column ~70 (60 compact), spacers 24, + ↕ with their gaps ~100, ‹ Today › and ☰ ~175, padding 56, gap 16.
+        let clock_w = if self.viewport.0 < 800. { 60. } else { 70. };
+        let room = self.viewport.0 - 56. - title_w - clock_w - 24. - 100. - 175. - 16.;
         let (mut row, mut menu): (Vec<usize>, Vec<usize>) = (0..self.calendars.len()).partition(|&c| !self.calendars[c].secondary);
         let width = |names: &[String]| -> f32 { names.iter().map(|n| 41. + n.chars().count() as f32 * 6.9).sum() };
         // Longest names that fit: up to 18 characters, then 10.

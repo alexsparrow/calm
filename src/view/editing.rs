@@ -52,6 +52,8 @@ pub(super) enum Undo {
     /// Drop the delete if it hasn't gone out yet; otherwise bring the event back as a new one
     /// from its fields.
     Delete { seq: Option<i64>, key: String, fields: Value },
+    /// Move the event back (which, unsent, cancels the change).
+    Reschedule { key: String, id: String, from: (i64, i64) },
 }
 
 impl CalmView {
@@ -142,7 +144,7 @@ impl CalmView {
     }
 
     /// Guests hear about changes unless you turned it off for this event.
-    fn notify_choice(&self, r: &EditRef) -> String {
+    pub(super) fn notify_choice(&self, r: &EditRef) -> String {
         if r.guests > 0 && !self.quiet.contains(&(r.key.clone(), r.id.clone())) { "all".into() } else { "none".into() }
     }
 
@@ -186,6 +188,9 @@ impl CalmView {
     fn undo_toast(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.toast.take() else { return };
         let Ok(store) = crate::sync::store::Store::open(&crate::sync::db_path()) else { return };
+        if let Some(Undo::Reschedule { key, id, from }) = &t.undo {
+            self.reschedule(key, id, *from, false, cx);
+        }
         if let Some(Undo::Delete { seq, key, fields }) = t.undo {
             // Not sent yet: just drop it. (A delete of an unsent new event left nothing to drop:
             // that one never existed anywhere else, so it comes back as new too.)
@@ -510,19 +515,14 @@ impl CalmView {
         )
     }
 
-    /// A new event at the next half hour, an hour long, in your default calendar; opened in the
-    /// drawer with its title ready to type.
-    pub(super) fn new_event(&mut self, cx: &mut Context<Self>) {
+    /// A new event from `start` to `end` (Google's shape) in your default calendar; opened in
+    /// the drawer with its title ready to type.
+    pub(super) fn add_event(&mut self, start: Value, end: Value, cx: &mut Context<Self>) {
         let Some(key) = self.default_calendar() else {
             self.toast("No calendar you can add to: connect a Google account (docs/google.md)".into(), None, cx);
             return;
         };
-        use chrono::Timelike;
-        let now = Local::now().naive_local();
-        let hour = now.date().and_hms_opt(now.hour(), 0, 0).unwrap_or(now);
-        let start = hour + chrono::Duration::minutes(if now.minute() < 30 { 30 } else { 60 });
-        let at = |t: chrono::NaiveDateTime| Local.from_local_datetime(&t).earliest().map(|t| t.with_timezone(&Utc)).unwrap_or_else(Utc::now);
-        let fields = json!({ "summary": "New event", "start": edit::time(at(start)), "end": edit::time(at(start + chrono::Duration::hours(1))) });
+        let fields = json!({ "summary": "New event", "start": start, "end": end });
         let op = edit::create(&key, fields, Origin::App, State::Pending);
         let id = op.event.clone();
         self.queue_change(op, cx);

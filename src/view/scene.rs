@@ -40,6 +40,14 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
+/// Amber: a sync conflict, or a time you're placing that overlaps something.
+const CONFLICT: Hsla = Hsla { h: 38. / 360., s: 0.85, l: 0.52, a: 1. };
+
+/// Just below the top bar (and the mode bar under it).
+fn chrome_top() -> f32 {
+    super::chrome::TOPBAR_H + 50.
+}
+
 fn overlaps(a: &Rect, b: &Rect) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
@@ -406,7 +414,7 @@ impl CalmView {
             }
             let attention = match e.sync {
                 Some(Sync::Failed) => Some(th.now),
-                Some(Sync::Conflict) => Some(gpui::hsla(38. / 360., 0.85, 0.52, 1.)),
+                Some(Sync::Conflict) => Some(CONFLICT),
                 _ => None,
             };
             let (w, h) = (b[2] - b[0], b[3] - b[1]);
@@ -505,6 +513,7 @@ impl CalmView {
         self.hits = hits;
 
         let (n_labels, placed) = if skip("labels") { (0, Vec::new()) } else { self.labels(p, &arr, &boxes, window, &mut frame) };
+        self.paint_ghost(&arr, window, &mut frame);
 
         // "+3" where a month-view cell has more events than room.
         for (day, n) in overflow {
@@ -741,6 +750,83 @@ impl CalmView {
     }
 
     /// Furniture for lens `li` at layer opacity `a`.
+    /// The editing mode's preview: where the new or moved event would go, day by day, with
+    /// its time beside it.
+    fn paint_ghost(&self, arr: &Arr, window: &Window, f: &mut Frame) {
+        let Some(g) = self.ghost() else { return };
+        let th = self.theme;
+        let p = self.preset;
+        let spec = self.spec();
+        // Red where free time only refuses it; amber where it would overlap something.
+        let tone = if g.blocked {
+            th.now
+        } else if !g.overlaps.is_empty() {
+            CONFLICT
+        } else {
+            th.ink
+        };
+        // Outline what it would overlap.
+        if !g.blocked {
+            for &i in &g.overlaps {
+                let group = self.data.events[i].group;
+                for (j, h) in &self.hits {
+                    if self.data.events[*j].group != group {
+                        continue;
+                    }
+                    match h {
+                        Hit::Rect(r) => f.push(FRONT, Cmd::Quad { b: *r, r: 6f32.min((r[3] - r[1]) * 0.5), color: with_alpha(CONFLICT, 0.12), border: Some((CONFLICT, 2., false)) }),
+                        Hit::Poly(pts) => f.push(FRONT, Cmd::Stroke { pts: pts.clone(), closed: true, width: 2., color: CONFLICT }),
+                    }
+                }
+            }
+        }
+        let fill = with_alpha(tone, if g.cursor { 0.10 } else { 0.16 });
+        let edge = with_alpha(tone, if g.cursor { 0.45 } else { 0.7 });
+        let (a, b) = g.span;
+        let mut first: Option<Rect> = None;
+        for d in a.div_euclid(1440)..=(b - 1).div_euclid(1440) {
+            let day = d as i32;
+            let cell = arr.cell_inset(day);
+            if !arr.on_screen(&cell) {
+                continue;
+            }
+            let inner = self.inner(p, cell);
+            let whole = !g.timed || !self.timed_view();
+            let (m0, m1) = if whole { (0., 1.) } else { (((a - d * 1440).max(0) as f32) / 1440., ((b - d * 1440).min(1440) as f32) / 1440.) };
+            let (u0, u1, v0, v1) = if spec.x == Axis::TimeOfDay { (m0, m1, 0., 1.) } else { (0., 1., m0, m1) };
+            if whole || inner.coord == Coord::Cartesian {
+                let r = if whole {
+                    // All-day: the band above the time axis, if there is one, else the cell.
+                    if g.timed || !self.timed_view() || spec.coord == Coord::Polar { inner.cell } else { [cell[0], cell[1], cell[2], inner.cell[1]] }
+                } else {
+                    let (p0, p1) = (inner.map(u0, v0), inner.map(u1, v1));
+                    let ic = inner.cell;
+                    [p0.0.min(p1.0).max(ic[0]), p0.1.min(p1.1).max(ic[1]), p0.0.max(p1.0).min(ic[2]), p0.1.max(p1.1).min(ic[3])]
+                };
+                let r = if r[3] - r[1] < 3. { [r[0], r[1] - 1.5, r[2], r[3] + 1.5] } else { r };
+                f.push(FRONT, Cmd::Quad { b: r, r: 4., color: fill, border: Some((edge, 1.5, !g.cursor)) });
+                first.get_or_insert(r);
+            } else {
+                let n = 48;
+                let u = |k: usize| u0 + (u1 - u0) * k as f32 / n as f32;
+                let mut pts: Vec<Pt> = (0..=n).map(|k| inner.map(u(k), v0)).collect();
+                pts.extend((0..=n).rev().map(|k| inner.map(u(k), v1)));
+                f.push(FRONT, Cmd::Strip { pts: pts.clone(), color: fill });
+                f.push(FRONT, Cmd::Stroke { pts, closed: true, width: 1.5, color: edge });
+                let c = inner.center();
+                first.get_or_insert([c.0 - 1., c.1 - 1., c.0 + 1., c.1 + 1.]);
+            }
+        }
+        // The time, in a small chip just outside the first piece.
+        if let Some(r) = first {
+            let line = shape(window, g.label.clone().into(), &self.fonts.medium, 11.5, th.bg);
+            let w = f32::from(line.width) + 14.;
+            let (x, y) = ((r[0]).clamp(4., self.viewport.0 - w - 4.), (r[1] - 24.).max(chrome_top()));
+            f.push(FREE, Cmd::Quad { b: [x, y, x + w, y + 20.], r: 10., color: with_alpha(tone, 0.9), border: None });
+            f.push(FREE, Cmd::Line { line, at: (x + 7., y + 3.), size: 11.5, clip: None });
+        }
+    }
+
     fn decorate(&self, li: usize, a: f32, window: &Window, f: &mut Frame) {
         let th = self.theme;
         let fonts = &self.fonts;

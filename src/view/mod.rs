@@ -12,6 +12,7 @@ mod arrange;
 mod chrome;
 mod editing;
 mod input;
+mod modes;
 mod scene;
 
 use std::cell::Cell;
@@ -230,6 +231,13 @@ pub struct CalmView {
     focus_title: bool,
     /// The drawer's open date or time picker.
     picker: Option<editing::Picker>,
+    /// New or Adjust, when you've entered one (see `modes`); its snap step in minutes, whether
+    /// it keeps to free time, where its cursor is, and the grip under the pointer.
+    mode: Option<modes::Mode>,
+    snap: i64,
+    free_only: bool,
+    cursor: Option<modes::Slot>,
+    hover_grip: Option<modes::Grip>,
     /// `--picker`: open this picker once the drawer has an event.
     pending_picker: Option<u8>,
     hud_on: bool,
@@ -396,6 +404,11 @@ params_open: opts.controls,
             changes_unticked: Default::default(),
             focus_title: false,
             picker: None,
+            mode: None,
+            snap: 15,
+            free_only: false,
+            cursor: None,
+            hover_grip: None,
             pending_picker: opts.picker,
             hud_on: opts.bench,
             mouse: (-1., -1.),
@@ -428,6 +441,11 @@ params_open: opts.controls,
         };
         this.restat();
         this.resolve_place(&config.settings);
+        match opts.mode.as_deref() {
+            Some("new") => this.toggle_mode(true),
+            Some("adjust") => this.toggle_mode(false),
+            _ => {}
+        }
         if let Some(lens) = opts.lens {
             this.set_preset(lens.min(this.views.len() - 1));
         }
@@ -966,9 +984,9 @@ params_open: opts.controls,
         for l in &mut self.layers {
             moving |= l.step(dt, GENTLE);
         }
-        self.drawer.target = if self.selected.is_some() { 1. } else { 0. };
+        self.drawer.target = if self.drawer_open() { 1. } else { 0. };
         let hovering = self.hovered.is_some() || self.hover_day.is_some() || self.hover_zone.is_some();
-        self.tooltip.target = if hovering && self.selected.is_none() { 1. } else { 0. };
+        self.tooltip.target = if hovering && self.selected.is_none() && self.mode.is_none() { 1. } else { 0. };
         self.help.target = if self.help_on { 1. } else { 0. };
         self.editor.target = if self.editor_on { 1. } else { 0. };
         self.menu.target = if self.menu_on { 1. } else { 0. };
@@ -976,7 +994,9 @@ params_open: opts.controls,
         self.margin_l.target = self.gutter_target();
         // A row of hour labels per extra zone above a horizontal time axis.
         let rows = if self.spec().x == Axis::TimeOfDay { self.shown_zones().len() } else { 0 };
-        self.margin_t.target = scene::MARGIN_T + scene::ZONE_ROW * rows as f32;
+        // Room for the mode bar under the top bar while you're in a mode.
+        let mode_bar = if self.mode.is_some() { 40. } else { 0. };
+        self.margin_t.target = scene::MARGIN_T + scene::ZONE_ROW * rows as f32 + mode_bar;
         self.margin_b.target = CONTROLS_ROW;
         for (s, cfg) in [
             (&mut self.switcher, SNAPPY),
@@ -1015,8 +1035,13 @@ params_open: opts.controls,
         (overview && self.plot_contains(pos)).then(|| arr.day_at(pos)).flatten()
     }
 
+    /// The drawer shows the selected event, except while you adjust events (it would be in the way).
+    fn drawer_open(&self) -> bool {
+        self.selected.is_some() && !self.adjusting()
+    }
+
     fn over_chrome(&self, (x, y): Pt) -> bool {
-        let drawer = self.selected.is_some() && x > self.viewport.0 - chrome::DRAWER_W - 24.;
+        let drawer = self.drawer_open() && x > self.viewport.0 - chrome::DRAWER_W - 24.;
         drawer || y < chrome::TOPBAR_H || y > self.viewport.1 - self.margin_b.x + 6.
     }
 
@@ -1024,6 +1049,10 @@ params_open: opts.controls,
         let k = &ev.keystroke;
         // Keys declared by the view's params come first.
         let plain = !(k.modifiers.control || k.modifiers.alt || k.modifiers.platform);
+        if plain && self.mode_key(&k.key, k.modifiers.shift, cx) {
+            cx.notify();
+            return;
+        }
         if plain && self.param_key(&k.key) {
             cx.notify();
             return;
@@ -1050,7 +1079,8 @@ params_open: opts.controls,
             "z" => self.zones_on = !self.zones_on,
             "m" => self.menu_on = !self.menu_on,
             "o" => self.changes_on = !self.changes_on,
-            "n" => self.new_event(cx),
+            "n" => self.toggle_mode(true),
+            "a" => self.toggle_mode(false),
             "e" => {
                 self.editor_on = !self.editor_on;
                 self.editor_note = None;
@@ -1092,6 +1122,9 @@ params_open: opts.controls,
         }
         let pos: Pt = (ev.position.x.into(), ev.position.y.into());
         self.mouse = pos;
+        if self.mode.is_some() && self.mode_move(pos) {
+            cx.notify();
+        }
         let zone = self.zone_hits.borrow().iter().find(|(r, _)| pos.0 >= r[0] && pos.0 <= r[2] && pos.1 >= r[1] && pos.1 <= r[3]).map(|(_, z)| *z);
         if zone != self.hover_zone {
             self.hover_zone = zone;
@@ -1119,6 +1152,10 @@ params_open: opts.controls,
         if self.menu_on || self.params_open {
             self.menu_on = false;
             self.params_open = false;
+            cx.notify();
+            return;
+        }
+        if self.mode_down(pos, cx) {
             cx.notify();
             return;
         }
@@ -1312,6 +1349,16 @@ impl Render for CalmView {
         self.drawn = built.counts;
         let waiting = self.pending.0.is_some() || self.pending.1.is_some();
         if waiting && self.stable_frames > 3 {
+            // In a mode, `--select` is the press (a new event's start, or a drag's) and
+            // `--hover` where the pointer is now.
+            if self.mode.is_some() {
+                if let Some(pos) = self.pending.1.take() {
+                    self.mode_down(pos, cx);
+                }
+                if let Some(pos) = self.pending.0 {
+                    self.mode_move(pos);
+                }
+            }
             if let Some(pos) = self.pending.0.take() {
                 self.mouse = pos;
                 self.hover_zone = self.zone_hits.borrow().iter().find(|(r, _)| pos.0 >= r[0] && pos.0 <= r[2] && pos.1 >= r[1] && pos.1 <= r[3]).map(|(_, z)| *z);
@@ -1351,7 +1398,15 @@ impl Render for CalmView {
                     this.on_down(ev, cx)
                 }),
             )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.mode_up(cx);
+                    cx.notify();
+                }),
+            )
             .on_scroll_wheel(cx.listener(|this, ev, _, cx| this.on_scroll(ev, cx)))
+            .when_some(self.mode_cursor(), |d, c| d.cursor(c))
             // Bar backgrounds sit under the canvas, so headers and labels draw over them.
             .children(self.chrome_bands())
             .child(
@@ -1373,6 +1428,7 @@ impl Render for CalmView {
             .children(self.drawer_card(cx))
             .children(self.editor_panel(cx))
             .children(self.menu_panel(cx))
+            .children(self.mode_bar(cx))
             .children(self.toast_card(cx))
             .children(self.changes_panel(cx))
             .children(self.help_card())
@@ -1390,6 +1446,8 @@ pub struct Options {
     pub menu: bool,
     /// Open with the changes panel showing (screenshots).
     pub changes: bool,
+    /// Start in an editing mode: `new` or `adjust` (screenshots).
+    pub mode: Option<String>,
     /// Open the drawer's picker (0 date, 1 start, 2 end) once an event is selected (screenshots).
     pub picker: Option<u8>,
     /// Open with the controls popup showing, when they're folded into a button (screenshots).
@@ -1425,6 +1483,7 @@ impl Options {
                 "--edit" => o.edit = true,
                 "--menu" => o.menu = true,
                 "--changes" => o.changes = true,
+                "--mode" => o.mode = args.next(),
                 "--picker" => o.picker = args.next().and_then(|n| n.parse().ok()),
                 "--controls" => o.controls = true,
                 "--cycle" => o.cycle = true,
@@ -1914,16 +1973,21 @@ impl CalmView {
 
     /// Queues a change you made: staged in review mode, otherwise sent after a short pause
     /// (so a burst of edits to one event goes as one). Shows it at once either way.
-    pub(super) fn queue_change(&mut self, mut op: crate::sync::outbox::Op, cx: &mut Context<Self>) -> Option<i64> {
+    pub(super) fn queue_change(&mut self, op: crate::sync::outbox::Op, cx: &mut Context<Self>) -> Option<i64> {
+        self.queue_change_held(op, 2, cx)
+    }
+
+    /// `queue_change`, sent no sooner than `hold` seconds from now (while an undo is offered).
+    pub(super) fn queue_change_held(&mut self, mut op: crate::sync::outbox::Op, hold: i64, cx: &mut Context<Self>) -> Option<i64> {
         use crate::sync::outbox::State;
         let review = self.review_mode(&op.key());
         op.state = if review { State::Draft } else { State::Pending };
-        op.next_attempt_at = (!review).then(|| chrono::Utc::now().timestamp() + 2);
+        op.next_attempt_at = (!review).then(|| chrono::Utc::now().timestamp() + hold);
         let seq = crate::sync::store::Store::open(&crate::sync::db_path()).ok().and_then(|mut s| s.queue(op).ok()).flatten();
         self.reload_live();
         if !review {
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_millis(2200)).await;
+                cx.background_executor().timer(Duration::from_millis(hold as u64 * 1000 + 200)).await;
                 let _ = this.update(cx, |this, _| {
                     if let Some(s) = &this.sync {
                         let _ = s.commands.send(crate::sync::Command::Flush);

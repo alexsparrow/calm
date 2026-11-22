@@ -267,16 +267,33 @@ Moving a meeting can email everyone on it, so this is decided deliberately, neve
     30 s, it defaults to *Send*, which is Google's own default when you move a meeting in its UI.
   - In `review` mode, you decide in the changes panel before committing.
 
-## Interaction (first slice)
+## Interaction
 
-In cartesian time views (Grid, Lanes, Energy, and your own views with a time axis):
+Clicking and dragging never change your calendar by themselves: a stray click or drag only
+selects. To change times you enter a mode, and its bar under the top bar says what the next
+click does. The same works in every view, cartesian or dial; in views without a time of day
+(aggregates, lists) the unit is a whole day, and events made there are all-day.
 
-- **Create:** drag across empty time. A ghost block follows, snapping to 15 minutes (`Alt`: 5).
-  On release you type the title in place: `Enter` saves, `Esc` cancels. Clicking empty time
-  makes a 30-minute event. It goes to your `default-calendar` (new setting), else your primary.
-- **Move:** drag an event. Across days too.
-- **Resize:** drag its end edge (bottom edge where time runs down, right edge where it runs across).
-- **All-day:** drag a bar in the band to move its dates, or its end to change how many days.
+- **New** (`N`, or + at the top): click where the event starts, then where it ends. The span
+  follows the pointer between the two clicks, with its date, times and length beside it.
+  Clicking the same spot twice makes an hour. Clicking above a day's time axis (its all-day
+  band) makes an all-day event. It goes to your `default-calendar`, else your primary, and opens
+  in the drawer with its title selected.
+- **Adjust** (`A`, or ↕ at the top): drag an event to move it, across days too; drag its start or
+  end edge to resize it (cartesian time views). The drawer stays closed while you adjust, out of
+  the way. Read-only events say why instead of moving.
+- **Snap:** 5, 10, 15, 30 or 60 minutes (`[` and `]`, or the bar); 15 by default. A moved event's
+  start lands on the step.
+- **Free time only** (`F`, or the bar): starts must be in free time and new events stop at the
+  next busy one; a move onto busy time is refused. Busy means confirmed timed events in the
+  calendars you're showing, not secondary ones.
+- **Keyboard:** arrows or `hjkl` move the cursor by a step along time and by a day across (a week
+  vertically in day views), and `Enter` places. In Adjust, they move the selected event and
+  `Shift` resizes it. `Esc` steps back: the start you placed, the drag, then the mode.
+- **Undo a move:** each move shows "Moved … · Undo". In `auto` mode the change waits while the
+  undo is offered (8 s) instead of the usual 2, so Undo cancels it before anything is sent: an
+  update that returns an event to where it was is dropped from the outbox, not sent. A run of
+  moves to the same event undoes to where it started.
 - **Edit:** the drawer becomes editable. That covers title, time, all-day, calendar, location
   and description, plus delete. Changes save as you leave a field.
 - **Delete:** `Delete` or `Backspace` on the selected event. It disappears with an "Undo" toast;
@@ -284,8 +301,6 @@ In cartesian time views (Grid, Lanes, Energy, and your own views with a time axi
 - **Undo and redo:** `Ctrl+Z` and `Ctrl+Shift+Z`, from a local history of ops.
   - Undoing an unsent op removes it from the outbox, or un-coalesces it.
   - Undoing a sent op queues its inverse.
-- **Read-only events** show no drag handles. Trying to drag one shows why ("UK holidays is
-  read-only").
 
 States on screen:
 - **Pending:** a slightly dimmed fill and a small dot.
@@ -294,7 +309,9 @@ States on screen:
 - **Status line:** "N changes waiting to sync" while any are queued, and the first problem when
   something needs you.
 
-Dials and aggregate views stay read-only for direct manipulation, and the drawer works everywhere.
+Not yet: a popover asking "this event or all events" when you move an instance of a series (it
+moves the instance), the "notify guests?" bar (moves use the drawer's notify setting), and
+picking an event from the keyboard.
 
 ## For scripts and agents
 
@@ -350,8 +367,9 @@ On top of that:
    - Text fields (calm needs a small text input).
    - Delete and undo, default calendar, the guest notification toggle.
    - The changes panel, with its checkboxes, reverts, preview and commit.
-3. **Direct manipulation:** drag to create, move and resize in time views; the all-day band; the
-   recurring-instance popover; the "notify guests?" bar.
+3. **Direct manipulation:** the New and Adjust modes (create, move, resize, in every view; the
+   all-day band; snapping; free time only; keyboard), with undo before sending. Still to come:
+   the recurring-instance popover and the "notify guests?" bar.
 4. **Later:** "this and following", replying to invitations, converting between all-day and
    timed, CalDAV (iCloud, Fastmail) behind the same outbox.
 

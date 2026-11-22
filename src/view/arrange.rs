@@ -243,3 +243,23 @@ impl Inner {
         }
     }
 }
+
+impl Inner {
+    /// The inverse of `map`: inner (u, v) for a screen point (outside the cell, beyond 0..1).
+    pub fn unmap(&self, (x, y): Pt) -> (f32, f32) {
+        let (nu, nv) = match self.coord {
+            Coord::Cartesian => {
+                let [x0, y0, x1, y1] = self.cell;
+                ((x - x0) / (x1 - x0).max(1e-3), (y - y0) / (y1 - y0).max(1e-3))
+            }
+            Coord::Polar => {
+                let (cx, cy) = self.center();
+                let (dx, dy) = (x - cx, y - cy);
+                let (r_in, r_out) = self.radii();
+                let nu = ((dy.atan2(dx) + FRAC_PI_2) / TAU).rem_euclid(1.);
+                (nu, ((dx * dx + dy * dy).sqrt() - r_in) / (r_out - r_in).max(1e-3))
+            }
+        };
+        (self.xr.0 + nu * (self.xr.1 - self.xr.0), self.yr.0 + nv * (self.yr.1 - self.yr.0))
+    }
+}

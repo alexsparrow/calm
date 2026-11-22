@@ -293,6 +293,14 @@ impl Store {
                     }
                 }
                 apply_patch(&mut prev.patch, &op.patch);
+                // Back where it started (an undo, say): nothing left to send.
+                let unchanged = prev.kind == Kind::Update
+                    && prev.patch.as_object().is_some_and(|p| p.iter().all(|(k, v)| prev.base.get(k).is_some_and(|b| same(b, v))));
+                if unchanged {
+                    tx.execute("DELETE FROM outbox WHERE seq = ?1", [prev.seq])?;
+                    tx.commit()?;
+                    return Ok(None);
+                }
                 // An agent's change folded into yours stays staged.
                 let state = if op.state == State::Draft { State::Draft } else { prev.state };
                 tx.execute(
@@ -515,6 +523,21 @@ mod tests {
         assert!(store.claim(a).unwrap());
         let d = store.queue(ev(Kind::Update, json!({ "summary": "C" }), json!({ "summary": "D" }))).unwrap().unwrap();
         assert_ne!(a, d);
+    }
+
+    #[test]
+    fn moving_back_cancels() {
+        let mut store = Store::memory().unwrap();
+        let t = |s: &str| json!({ "dateTime": s });
+        let ev = |base: Value, patch: Value| Op::new("Google", "me", "e1", Kind::Update, base, patch, Origin::App);
+        let at9 = json!({ "summary": "A", "start": t("2026-11-24T09:00:00Z"), "end": t("2026-11-24T10:00:00Z") });
+        let at10 = json!({ "summary": "A", "start": t("2026-11-24T10:00:00Z"), "end": t("2026-11-24T11:00:00Z") });
+        let moved = json!({ "start": at10["start"], "end": at10["end"] });
+        store.queue(ev(at9.clone(), moved)).unwrap().unwrap();
+        // The undo: back to nine, written in another zone's offset (the same instant).
+        let back = json!({ "start": t("2026-11-24T17:00:00+08:00"), "end": t("2026-11-24T18:00:00+08:00") });
+        assert_eq!(store.queue(ev(at10, back)).unwrap(), None);
+        assert!(store.ops().unwrap().is_empty());
     }
 
     #[test]
