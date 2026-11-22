@@ -23,6 +23,8 @@ use crate::text::{self, fit, shape};
 use crate::theme::{CalColors, with_alpha};
 
 pub const MARGIN_R: f32 = 24.;
+/// Width set aside for the energy rail beside each day's time axis.
+pub const RAIL_W: f32 = 10.;
 pub const MARGIN_T: f32 = 128.;
 /// Width of each extra time-zone column of hour labels, and height of each extra row.
 pub const ZONE_COL: f32 = 50.;
@@ -416,6 +418,17 @@ impl CalmView {
                         frame.push(BACK, Cmd::Quad { b: [x - 0.75, b[3], x + 0.75, y], r: 0., color: with_alpha(th.now, 0.55 * ga), border: None });
                     }
                     frame.push(FRONT, Cmd::Quad { b: [x - 3.5, y - 3.5, x + 3.5, y + 3.5], r: 3.5, color: with_alpha(th.now, ga), border: None });
+                }
+            }
+            // With the energy rail: strained events get a dot on the rail at their midpoint.
+            if !energy_lens && t > 0.99 && model::strain(e) >= model::STRAIN && self.rail_of(p).is_some_and(|(k, _)| k == crate::spec::Rail::Energy) {
+                let ga = self.lenses[p].grid.x.clamp(0., 1.) * self.layers[p].x.clamp(0., 1.) * alpha;
+                if ga > 0.01 {
+                    let inner = self.inner(p, arr.cell_inset(m.target.day));
+                    let u = (e.start_min + e.end_min()) * 0.5 / 1440.;
+                    let (x, y) = inner.map(u, u);
+                    let (x, y) = if self.views[p].y == Axis::TimeOfDay { (inner.cell[0] - RAIL_W * 0.5, y) } else { (x, inner.cell[1] - RAIL_W * 0.5) };
+                    frame.push(FRONT, Cmd::Quad { b: [x - 3.5, y - 3.5, x + 3.5, y + 3.5], r: 3.5, color: with_alpha(th.now, ga), border: Some((with_alpha(th.bg, ga), 1., false)) });
                 }
             }
             boxes.push((i, b, t));
@@ -818,6 +831,54 @@ impl CalmView {
                 for (j, tz) in zones.iter().enumerate() {
                     let x = px0 - 12. - ZONE_COL * (j + 1) as f32;
                     zone_label(f, self.zones.label(*tz, date), &fonts.medium, with_alpha(th.faint, za), (x, py0 - 21.), Some(*tz), za);
+                }
+            }
+        }
+
+        // The rail: a series beside each day's time axis, in 10-minute steps whose width
+        // (style `rail`) and colour follow it. Energy uses the Demand colour scale, so events
+        // coloured by Demand compare directly; daylight runs night → dawn → day.
+        if let Some((kind, rail)) = self.rail_of(li) {
+            let ra = a * grid;
+            if ra > 0.01 {
+                let time_y = spec.y == Axis::TimeOfDay;
+                let n = crate::energy::SAMPLES - 1;
+                for &(d, _) in &vis {
+                    let inner = self.inner(li, arr.cell_inset(d));
+                    let ci = inner.cell;
+                    let date = self.data.date(d);
+                    let utc = self.zones.primary_offset(date) as f32;
+                    let place = self.place;
+                    let value = |minute: f32| match kind {
+                        crate::spec::Rail::Energy => self.data.energy_at(d, minute),
+                        crate::spec::Rail::Daylight => place.map_or(0., |p| crate::sun::daylight(crate::sun::elevation(p, date, minute, utc))),
+                    };
+                    // Runs of near-equal energy draw as one quad: far fewer than one per step.
+                    let mut k = 0;
+                    while k < n {
+                        let level = value((k as f32 + 0.5) / n as f32 * 1440.);
+                        let mut end = k + 1;
+                        while end < n && (value((end as f32 + 0.5) / n as f32 * 1440.) - level).abs() < 0.02 {
+                            end += 1;
+                        }
+                        let (u0, u1) = (k as f32 / n as f32, end as f32 / n as f32);
+                        k = end;
+                        let (p0, p1) = (inner.map(u0, u0), inner.map(u1, u1));
+                        let (s0, s1) = if time_y { (p0.1.max(ci[1]), p1.1.min(ci[3])) } else { (p0.0.max(ci[0]), p1.0.min(ci[2])) };
+                        if s1 <= s0 {
+                            continue;
+                        }
+                        let w = if rail { 2. + (RAIL_W - 4.) * level } else { RAIL_W - 4. };
+                        let color = with_alpha(
+                            match kind {
+                                crate::spec::Rail::Energy => color::ramp(&th, color::Measure::Demand, 0.2 + 0.8 * level),
+                                crate::spec::Rail::Daylight => color::daylight(&th, level),
+                            },
+                            ra,
+                        );
+                        let b = if time_y { [ci[0] - RAIL_W + 1., s0, ci[0] - RAIL_W + 1. + w, s1] } else { [s0, ci[1] - RAIL_W + 1., s1, ci[1] - RAIL_W + 1. + w] };
+                        f.push(BACK, Cmd::Quad { b, r: 0., color, border: None });
+                    }
                 }
             }
         }

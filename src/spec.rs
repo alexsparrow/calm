@@ -116,6 +116,15 @@ pub enum Detail {
     DaySpan,
 }
 
+/// A time-of-day series drawn along each day's time axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rail {
+    /// Your energy (see `energy`), on the Demand colour scale.
+    Energy,
+    /// The sun's elevation where you are.
+    Daylight,
+}
+
 /// Time-zone labelling of the time axis.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ZoneAxes {
@@ -215,6 +224,10 @@ pub struct Spec {
     pub color: ColorRef,
     /// Whether aggregate cells carry the day-span glyph.
     pub day_span: Ref,
+    /// A series drawn beside each day's time axis (`off`, `energy`, `daylight`), and how
+    /// (`rail`: width and colour follow it; `strip`: colour only).
+    pub rail: Ref,
+    pub rail_style: Ref,
 }
 
 /// Current param values for one view, by name.
@@ -322,6 +335,17 @@ impl Spec {
             // Splitting is for aggregates; events take calendar colour through `palette`.
             m => ColorEnc { measure: Measure::from_name(m).unwrap_or(Measure::Hours), by_calendar: split && mark == Mark::Heat, compose, palette },
         }
+    }
+
+    /// What the rail shows, if anything, and whether its width follows the value (`rail`)
+    /// or only its colour (`strip`).
+    pub fn rail(&self, values: &Values, mark: Mark) -> Option<(Rail, bool)> {
+        let kind = match self.resolve(&self.rail, values, mark).as_str() {
+            "energy" => Rail::Energy,
+            "daylight" => Rail::Daylight,
+            _ => return None,
+        };
+        Some((kind, self.resolve(&self.rail_style, values, mark) != "strip"))
     }
 
     pub fn detail(&self, values: &Values, mark: Mark) -> Detail {

@@ -126,6 +126,8 @@ pub struct Settings {
     pub sources: Option<Vec<SourceDecl>>,
     pub calendars: Option<Vec<CalendarDecl>>,
     pub energy: Option<crate::energy::EnergyModel>,
+    /// Where you are (latitude, longitude), for daylight.
+    pub location: Option<(f32, f32)>,
     pub opacity: Option<f32>,
     pub blur: bool,
     /// `light`, `dark` or `system`.
@@ -169,6 +171,8 @@ struct Loader {
     /// Sources declared in this load (a user list replaces nothing built in).
     sources: Vec<SourceDecl>,
     calendars: Vec<CalendarDecl>,
+    /// `defaults "View" param=value …` nodes (file, line, col, node), applied in `check_refs`.
+    param_defaults: Vec<(String, usize, usize, KdlNode)>,
     /// Each source's calendar (file, line, col, name, given explicitly), checked in `check_refs`.
     cal_refs: Vec<(String, usize, usize, String, bool)>,
 }
@@ -278,6 +282,23 @@ impl Loader {
                 "source" => self.source_node(&at, node),
                 "calendar" => self.calendar_node(&at, node),
                 "energy" => self.energy_node(&at, node),
+                "location" => {
+                    self.check_props(&at, node, &["lat", "lon"]);
+                    let (lat, lon) = (self.num_prop(&at, node, "lat"), self.num_prop(&at, node, "lon"));
+                    match (lat, lon) {
+                        (Some(lat), Some(lon)) if lat.abs() <= 90. && lon.abs() <= 180. => {
+                            self.settings.location = Some((lat as f32, lon as f32));
+                            self.settings.text.push(node.to_string());
+                        }
+                        _ => self.err(&at, node.span().offset(), "`location` needs lat=DEGREES (−90…90) and lon=DEGREES (−180…180), north and east positive"),
+                    }
+                }
+                "defaults" => {
+                    // Applied once every view has loaded (see `check_refs`).
+                    let (line, col) = at.pos(node.span().offset());
+                    self.param_defaults.push((at.file.to_string(), line, col, node.clone()));
+                    self.settings.text.push(node.to_string());
+                }
                 "window" => {
                     self.check_props(&at, node, &["opacity", "blur"]);
                     if let Some(o) = self.num_prop(&at, node, "opacity") {
@@ -307,7 +328,7 @@ impl Loader {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "zones", "source", "calendar", "energy", "window", "theme"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
@@ -380,11 +401,17 @@ impl Loader {
 
     /// `energy wake="7:00" sleep="23:00" peak="16:48" reactive=#true drain=0.3 recovery="60m" { at "9:00" 0.8 }`
     fn energy_node(&mut self, at: &At, node: &KdlNode) {
-        use crate::energy::{Baseline, EnergyModel};
+        use crate::energy::Baseline;
         self.check_props(at, node, &["model", "wake", "sleep", "peak", "reactive", "drain", "recovery"]);
         let off = node.span().offset();
-        let mut m = EnergyModel::default();
-        let Baseline::ThreeProcess { mut wake, mut sleep, mut peak } = m.baseline.clone() else { unreachable!() };
+        // Each `energy` line layers on earlier ones (calm.kdl, then the editor's file), so
+        // `energy reactive=#false` keeps your hours and your own curve.
+        let mut m = self.settings.energy.clone().unwrap_or_default();
+        let (mut wake, mut sleep, mut peak) = match m.baseline {
+            Baseline::ThreeProcess { wake, sleep, peak } => (wake, sleep, peak),
+            Baseline::Points(_) => (7., 23., 16.8),
+        };
+        let retimed = ["wake", "sleep", "peak"].iter().any(|k| Self::prop(node, k).is_some());
         let time = |this: &mut Self, key: &str, slot: &mut f32| {
             if let Some(s) = this.str_prop(at, node, key) {
                 match clock_hours(&s) {
@@ -418,6 +445,7 @@ impl Loader {
         let model = self.str_prop(at, node, "model");
         m.baseline = match model.as_deref() {
             None if !points.is_empty() => Baseline::Points(points),
+            None if !retimed => m.baseline,
             Some("points") if points.len() >= 2 => Baseline::Points(points),
             Some("points") => {
                 self.err(at, off, "model=\"points\" needs at least two `at \"H:MM\" LEVEL` lines inside");
@@ -456,8 +484,51 @@ impl Loader {
         self.settings.energy = Some(m);
     }
 
+    /// `defaults "Grid" measure="demand" span=#true`: a view's param defaults, without copying the view.
+    fn apply_defaults(&mut self) {
+        for (file, line, col, node) in std::mem::take(&mut self.param_defaults) {
+            let mut diag = |message: String| Diag { file: file.clone(), line, col, message };
+            let Some(view) = node.entries().first().filter(|e| e.name().is_none()).and_then(|e| e.value().as_string()).map(str::to_string) else {
+                self.diags.push(diag("`defaults` needs a view name, like `defaults \"Grid\" measure=\"demand\"`".into()));
+                continue;
+            };
+            let names: Vec<String> = self.views.iter().map(|(v, _)| v.name.clone()).collect();
+            let Some(vi) = names.iter().position(|n| *n == view) else {
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                self.diags.push(diag(format!("no view named `{view}`{}", suggest(&view, &refs))));
+                continue;
+            };
+            let mut errors = Vec::new();
+            for e in node.entries().iter().skip(1) {
+                let Some(key) = e.name().map(|n| n.value().to_string()) else { continue };
+                let spec = &mut self.views[vi].0;
+                let pnames: Vec<String> = spec.params.iter().map(|p| p.name.clone()).collect();
+                let Some(p) = spec.params.iter_mut().find(|p| p.name == key) else {
+                    let refs: Vec<&str> = pnames.iter().map(String::as_str).collect();
+                    errors.push(format!("view `{view}` has no param `{key}`{}", suggest(&key, &refs)));
+                    continue;
+                };
+                let value = match e.value() {
+                    KdlValue::Bool(b) => b.to_string(),
+                    v => v.as_string().map(str::to_string).unwrap_or_else(|| v.to_string()),
+                };
+                let ok = if p.bind == Bind::Toggle { value == "true" || value == "false" } else { p.options.iter().any(|o| o.value == value) };
+                if ok {
+                    p.default = value;
+                } else {
+                    let mut valid: Vec<&str> = if p.bind == Bind::Toggle { vec!["#true", "#false"] } else { p.options.iter().map(|o| o.value.as_str()).collect() };
+                    let mut seen = std::collections::HashSet::new();
+                    valid.retain(|v| seen.insert(*v));
+                    errors.push(format!("`{key}` can't be `{value}`; one of: {}", valid.join(", ")));
+                }
+            }
+            self.diags.extend(errors.into_iter().map(&mut diag));
+        }
+    }
+
     /// Every source's calendar must be declared, once any calendars are.
     fn check_refs(&mut self) {
+        self.apply_defaults();
         if self.calendars.is_empty() {
             return;
         }
@@ -711,6 +782,7 @@ impl Loader {
         let mut params: Vec<Param> = Vec::new();
         let mut color = None;
         let mut day_span = Ref::Lit("false".into());
+        let (mut rail, mut rail_style) = (Ref::Lit("off".into()), Ref::Lit("rail".into()));
 
         for child in Self::children(node) {
             let off = child.span().offset();
@@ -848,8 +920,18 @@ impl Loader {
                         };
                     }
                 }
+                "rail" => {
+                    // A series beside each day's time axis: `rail show="energy" style="rail"`.
+                    self.check_props(at, child, &["show", "style"]);
+                    if let Some(s) = self.str_prop(at, child, "show") {
+                        rail = Ref::parse(&s);
+                    }
+                    if let Some(s) = self.str_prop(at, child, "style") {
+                        rail_style = Ref::parse(&s);
+                    }
+                }
                 other => {
-                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "color", "detail"];
+                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "color", "detail", "rail"];
                     self.err(at, off, format!("unknown node `{other}` in view{}", suggest(other, &known)));
                 }
             }
@@ -873,6 +955,8 @@ impl Loader {
             ("color compose", &color.compose, Compose::NAMES),
             ("color palette", &color.palette, &["scale", "calendar", "true", "false"][..]),
             ("detail day-span", &day_span, &["true", "false"][..]),
+            ("rail show", &rail, &["off", "energy", "daylight"][..]),
+            ("rail style", &rail_style, &["rail", "strip"][..]),
         ] {
             match r {
                 Ref::Param(p) if !names.contains(&p.as_str()) => self.err(at, off, format!("{what} refers to `${p}`, but view `{name}` has no param `{p}`{}", suggest(p, &names))),
@@ -891,7 +975,7 @@ impl Loader {
         if self.diags.len() > errors_before {
             return None;
         }
-        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, color, day_span })
+        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, color, day_span, rail, rail_style })
     }
 }
 
@@ -1148,4 +1232,22 @@ fn clock_hours(s: &str) -> Option<f32> {
     let (h, m) = s.split_once(':').unwrap_or((s, "0"));
     let (h, m) = (h.trim().parse::<f32>().ok()?, m.trim().parse::<f32>().ok()?);
     (h >= 0. && (0. ..60.).contains(&m)).then_some(h + m / 60.)
+}
+
+/// Sets one property of a top-level settings node (e.g. `energy reactive=#false`) in the
+/// editor's file. It layers over calm.kdl, which is never rewritten.
+pub fn edit_setting(node: &str, prop: &str, value: KdlValue) -> Result<(), String> {
+    write_generated(|doc| {
+        let at = match doc.nodes().iter().position(|n| n.name().value() == node) {
+            Some(at) => at,
+            None => {
+                doc.nodes_mut().push(KdlNode::new(node));
+                doc.nodes().len() - 1
+            }
+        };
+        let n = &mut doc.nodes_mut()[at];
+        n.entries_mut().retain(|e| e.name().is_none_or(|k| k.value() != prop));
+        n.push((prop, value));
+        doc.autoformat();
+    })
 }

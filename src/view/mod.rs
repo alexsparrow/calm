@@ -181,6 +181,8 @@ pub struct CalmView {
     calendars: Vec<Calendar>,
     /// How energy is modelled (calm.kdl's `energy`).
     energy: crate::energy::EnergyModel,
+    /// Where you are, for daylight: calm.kdl's `location`, else your zone's city.
+    place: Option<crate::sun::Place>,
     now_min: f32,
     dirty: bool,
     stagger: bool,
@@ -383,6 +385,7 @@ impl CalmView {
             last_trace: String::new(),
             data,
             energy,
+            place: None,
         };
         this.restat();
         // The command line wins over calm.kdl's `theme`.
@@ -391,6 +394,7 @@ impl CalmView {
             Some("light") => Some(false),
             _ => None,
         });
+        this.resolve_place(&config.settings);
         if let Some(dark) = dark {
             this.theme_override = Some(dark);
             this.theme = theme_for(Some(dark), window.appearance(), this.translucent, &this.calendars);
@@ -497,6 +501,14 @@ impl CalmView {
     /// Inner coordinates of a cell in lens `p`.
     fn inner(&self, p: usize, mut cell: [f32; 4]) -> Inner {
         let spec = &self.views[p];
+        // Room for the energy rail along the time axis.
+        if self.rail_of(p).is_some() {
+            if spec.y == Axis::TimeOfDay {
+                cell[0] = (cell[0] + scene::RAIL_W).min(cell[2] - 4.);
+            } else {
+                cell[1] = (cell[1] + scene::RAIL_W).min(cell[3] - 4.);
+            }
+        }
         if spec.coord == Coord::Cartesian && spec.x != Axis::None {
             // Boxed cells keep a header strip for their date label.
             let b = self.arr_of(p, false).boxness();
@@ -1538,6 +1550,7 @@ fn start_sync(sources: &[crate::sync::Source], problems: &[String]) -> Sync {
 impl CalmView {
     /// Applies non-view settings from a freshly loaded config: zones, theme and sources.
     fn apply_settings(&mut self, settings: &crate::viewconf::Settings) {
+        self.resolve_place(settings);
         let energy = settings.energy.clone().unwrap_or_default();
         if energy != self.energy {
             self.energy = energy;
@@ -1647,4 +1660,35 @@ fn calendars_for(settings: &crate::viewconf::Settings, synthetic: bool) -> Vec<C
         return model::demo_calendars();
     }
     model::resolve_calendars(settings.calendars.as_deref(), &wanted)
+}
+
+impl CalmView {
+    /// What view `p`'s rail shows right now, and whether its width follows the value.
+    /// It needs a cartesian time axis inside its cells (and a place, for daylight).
+    pub(super) fn rail_of(&self, p: usize) -> Option<(crate::spec::Rail, bool)> {
+        let spec = &self.views[p];
+        let timed = spec.x == Axis::TimeOfDay || spec.y == Axis::TimeOfDay;
+        let mark = self.lenses[p].mark;
+        if spec.coord != Coord::Cartesian || !timed || mark != spec.mark {
+            return None;
+        }
+        spec.rail(&self.values[p], mark).filter(|(kind, _)| *kind != crate::spec::Rail::Daylight || self.place.is_some())
+    }
+
+    /// Where you are: the configured location, else your zone's principal city.
+    fn resolve_place(&mut self, settings: &crate::viewconf::Settings) {
+        self.place = settings.location.or_else(|| self.zones.primary.and_then(|tz| crate::sun::zone_place(tz.name())));
+    }
+}
+
+impl CalmView {
+    fn edit_energy(&mut self, prop: &str, value: kdl::KdlValue) {
+        self.editor_note = Some(match crate::viewconf::edit_setting("energy", prop, value) {
+            Ok(()) => {
+                self.reload_config();
+                ("Saved".into(), false)
+            }
+            Err(e) => (e.rsplit('/').next().unwrap_or(&e).to_string(), true),
+        });
+    }
 }

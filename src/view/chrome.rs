@@ -803,7 +803,7 @@ impl CalmView {
 /// One editable channel: caption, KDL child, optional property, (label, KDL value) options.
 type EditRow = (&'static str, &'static str, Option<&'static str>, &'static [(&'static str, &'static str)]);
 
-const EDIT_ROWS: [EditRow; 8] = [
+const EDIT_ROWS: [EditRow; 10] = [
     ("Days per line", "facet", Some("per-line"), &[("1", "1"), ("7", "7"), ("14", "14")]),
     ("Lines run", "facet", Some("dir"), &[("Down", "rows"), ("Across", "columns")]),
     ("Coordinates", "coord", None, &[("Cartesian", "cartesian"), ("Polar", "polar")]),
@@ -812,12 +812,19 @@ const EDIT_ROWS: [EditRow; 8] = [
     ("Overlaps", "collide", None, &[("Side by side", "split"), ("Conflicts", "highlight-conflict"), ("Overlay", "overlay")]),
     ("Mark", "mark", None, &[("Block", "block"), ("Pill", "pill"), ("List", "list"), ("Heat", "heat")]),
     ("Time zones", "zones", None, &[("All", "all"), ("Primary", "primary")]),
+    ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight")]),
+    ("Rail style", "rail", Some("style"), &[("Width + colour", "rail"), ("Colour", "strip")]),
 ];
 
 impl CalmView {
     /// The KDL value a view currently has for an editor row.
     fn edit_current(spec: &crate::spec::Spec, child: &str, prop: Option<&str>) -> String {
         use crate::spec::{Axis, Collide, Coord, Dir, Mark, ZoneAxes};
+        // A literal value as written; a `$param` shows as no choice selected.
+        let lit = |r: &crate::spec::Ref| match r {
+            crate::spec::Ref::Lit(v) => v.clone(),
+            crate::spec::Ref::Param(_) => String::new(),
+        };
         let axis = |a: Axis| match a {
             Axis::TimeOfDay => "time-of-day",
             Axis::Lane => "lane",
@@ -845,6 +852,8 @@ impl CalmView {
             }
             .into(),
             ("zones", _) => (if spec.zones == ZoneAxes::Primary { "primary" } else { "all" }).into(),
+            ("rail", Some("show")) => lit(&spec.rail),
+            ("rail", _) => lit(&spec.rail_style),
             _ => String::new(),
         }
     }
@@ -879,10 +888,14 @@ impl CalmView {
         });
         Some(
             div()
+                .id("editor")
                 .absolute()
                 .top(px(76.))
                 .right(px(16.))
                 .w(px(330.))
+                // Scrolls when taller than the window.
+                .max_h(px((self.viewport.1 - 76. - 16.).max(200.)))
+                .overflow_y_scroll()
                 .opacity(t.clamp(0., 1.))
                 .ml(px(16. * (1. - t)))
                 .p(px(18.))
@@ -908,6 +921,7 @@ impl CalmView {
                 )
                 .child(div().text_size(px(11.5)).text_color(th.muted).child(spec.describe(spec.mark)))
                 .children(rows)
+                .child(self.energy_settings(cx))
                 .child(
                     div()
                         .flex()
@@ -960,5 +974,71 @@ impl CalmView {
                     .text_color(th.faint)
                     .children(others.into_iter().flatten()),
             )
+    }
+}
+
+impl CalmView {
+    /// The editor's energy section: settings for you, shared by every view.
+    fn energy_settings(&self, cx: &mut Context<Self>) -> Div {
+        use crate::energy::Baseline;
+        let th = self.theme;
+        let caption = |s: &'static str| div().text_size(px(11.5)).text_color(th.faint).child(s);
+        let hm = |h: f32| {
+            let m = (h * 60.).round() as i32;
+            format!("{}:{:02}", m / 60 % 24, m % 60)
+        };
+        let reactive = self.energy.reactive;
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .mt(px(6.))
+            .pt(px(10.))
+            .border_t_1()
+            .border_color(th.border)
+            .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child("Your energy · all views"))
+            .child(caption("Reacts to your day"))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(2.))
+                    .child(self.chip("energy-react-on", "On", reactive).on_click(cx.listener(|this, _, _, cx| {
+                        this.edit_energy("reactive", kdl::KdlValue::Bool(true));
+                        cx.notify();
+                    })))
+                    .child(self.chip("energy-react-off", "Off", !reactive).on_click(cx.listener(|this, _, _, cx| {
+                        this.edit_energy("reactive", kdl::KdlValue::Bool(false));
+                        cx.notify();
+                    }))),
+            );
+        match self.energy.baseline {
+            Baseline::ThreeProcess { wake, sleep, .. } => {
+                for (key, label, at) in [("wake", "Wake", wake), ("sleep", "Sleep", sleep)] {
+                    // Half-hour steps, wrapping round midnight.
+                    let shifted = move |delta: f32| {
+                        let m = ((at + delta).rem_euclid(24.) * 60.).round() as i32;
+                        format!("{}:{:02}", m / 60, m % 60)
+                    };
+                    let (down, up) = (shifted(-0.5), shifted(0.5));
+                    section = section.child(caption(label)).child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(self.chip(gpui::ElementId::Name(format!("energy-{key}-down").into()), "−", false).on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_energy(key, kdl::KdlValue::String(down.clone()));
+                                cx.notify();
+                            })))
+                            .child(div().w(px(52.)).flex().justify_center().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).child(hm(at)))
+                            .child(self.chip(gpui::ElementId::Name(format!("energy-{key}-up").into()), "+", false).on_click(cx.listener(move |this, _, _, cx| {
+                                this.edit_energy(key, kdl::KdlValue::String(up.clone()));
+                                cx.notify();
+                            }))),
+                    );
+                }
+                section.child(div().text_size(px(11.)).text_color(th.faint).child("Model: three-process alertness (Åkerstedt & Folkard)"))
+            }
+            Baseline::Points(_) => section.child(div().text_size(px(11.)).text_color(th.faint).child("Your own curve, from calm.kdl")),
+        }
     }
 }

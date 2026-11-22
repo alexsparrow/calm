@@ -95,7 +95,7 @@ impl Zones {
     }
 
     /// UTC offset of the primary zone at midday on `date`, in minutes.
-    fn primary_offset(&self, date: NaiveDate) -> i32 {
+    pub fn primary_offset(&self, date: NaiveDate) -> i32 {
         let noon = date.and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
         match self.primary {
             Some(tz) => offset(tz, date),

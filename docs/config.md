@@ -35,11 +35,13 @@ ignored.
 | `params "name" { param … }` | A reusable set of params, pulled into views with `use "name"`. |
 | `include "path"` | Read another file, relative to this one. `*` is allowed in the last component: `include "views/*.kdl"`. |
 | `hide "Name" "Other"` | Remove views (built-in or included). |
+| `defaults "View" param=value …` | Set a view's param defaults without copying the view, e.g. `defaults "Grid" measure="demand" span=#true`. Checked against that view's params. |
 | `order "Name" "Other" …` | Order the lens switcher; unlisted views follow. Keys `1`–`9` follow this order. |
 | `zones "Zone" … { label "Zone" short="…" long="…" }` | Extra time zones (IANA names) shown beside the current one; whichever you're in is dropped. `short` labels the axes (a flag emoji works), `long` names it on hover. |
 | `calendar "Name" color="sage" demand=0.4` | A calendar: one chip in the top bar, a colour, and the default demand (0 light – 1 demanding) of its events for Energy and strain. `color` is a palette name (sage, clay, slate, ochre, plum, teal, rose, moss, sky, lavender, sand, stone) or `#rrggbb` (its hue is kept, saturation softened to suit the theme). Up to 12; chips follow this order. Without any `calendar` nodes, each source gets a calendar named by its `calendar=` (or its own name), coloured from the palette in order. |
 | `source "Name" url-file="…" calendar="…" refresh="15m"` | A calendar feed. Exactly one of `url-file=` (a file holding a secret address; chmod 600), `url=`, or `path=` (a local .ics). `calendar` names the calendar its events belong to (several sources can share one); once you declare calendars it must be one of them. `refresh`: `90s`, `15m`, `1h` (at least a minute). |
 | `energy …` | Your energy through the day, drawn in Energy and used for strain. See [Energy](#energy). |
+| `location lat=14.6 lon=121.0` | Where you are, for the daylight rail (degrees, north and east positive). Without it, calm uses the coordinates the time-zone database gives for your zone's city. |
 | `window opacity=0.8 blur=#false` | Translucent background (0.2–1) and compositor blur. Read at start-up. |
 | `theme "system"` | `light`, `dark` or `system`. |
 
@@ -88,6 +90,7 @@ Required: `facet`, `mark`, and `stops` with at least one `stop`.
 | `param …` | | A param just for this view (see below). |
 | `color measure=… split=… compose=… palette=…` | literal or `"$param"` | What colours marks. See below. |
 | `detail day-span=…` | `#true`, `#false` or `"$param"` | The first-start → last-end bar inside aggregate cells. |
+| `rail show=… style=…` | `show`: `off` (default), `energy`, `daylight`; `style`: `rail` (default) or `strip` | A series beside each day's time axis. `energy` uses the Demand colour scale, so an event coloured by Demand matches the rail when its demand matches your energy, and strained events get a dot on it. `daylight` is the sun's elevation where you are (night → dawn → full day). `rail` widens with the value; `strip` is colour only. Needs a cartesian time axis. Grid shows energy by default; change it in the editor (`E`). |
 
 ### Colour
 
@@ -124,6 +127,7 @@ energy reactive=#true drain=0.3 recovery="60m"   // how the day's demands draw i
   maps 7 → 0 and 14 → 1. You're at zero while asleep, and waking eases in over about an hour.
   `wake` and `sleep` set your hours. `peak` shifts the circadian phase; the authors note evening
   types may need it later by up to four hours.
+- **Layering**: each `energy` line builds on earlier ones, so a later `energy reactive=#false` (the editor writes these to views.generated.kdl) keeps your hours or your own curve.
 - **`model="points"`**: your own curve, a smooth loop through `at "H:MM" LEVEL` points.
 - **`reactive`** (default on): time spent on events drains energy at `drain` per hour at full
   demand (scaled by the event's demand, from its calendar), and it recovers with time constant

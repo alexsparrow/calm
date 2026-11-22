@@ -4,6 +4,7 @@ mod energy;
 mod layout;
 mod model;
 mod spec;
+mod sun;
 mod sync;
 mod text;
 mod theme;

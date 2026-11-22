@@ -30,7 +30,7 @@ cargo run --release
 | `F`, click the hour labels | Toggle between the default hours and the full 24 |
 | `Z` | Show / hide extra time zones |
 | `R` | Sync calendars now |
-| `E` | Edit the current view (layout, axes, mark…); saved to `views.generated.kdl` |
+| `E` | Edit the current view (layout, axes, mark, rail: off · energy · daylight) and your energy settings; saved to `views.generated.kdl` |
 | `?` | Help · `` ` `` frame stats |
 
 The top bar shows the time here, with the time in each extra zone beneath it.

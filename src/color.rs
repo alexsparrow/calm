@@ -447,3 +447,13 @@ impl Compose {
 
     pub const NAMES: &[&str] = &["blend", "stripes", "stack", "dominant"];
 }
+
+/// Daylight from 0 (night) to 1 (full day): dusky blue through a warm dawn to pale sun.
+pub fn daylight(th: &Theme, t: f32) -> Hsla {
+    let (night, dawn, day) = if th.dark {
+        (hsla(225. / 360., 0.30, 0.30, 1.), hsla(22. / 360., 0.60, 0.52, 1.), hsla(48. / 360., 0.70, 0.66, 1.))
+    } else {
+        (hsla(225. / 360., 0.28, 0.42, 1.), hsla(22. / 360., 0.65, 0.62, 1.), hsla(48. / 360., 0.80, 0.70, 1.))
+    };
+    if t < 0.25 { mix(night, dawn, t / 0.25) } else { mix(dawn, day, (t - 0.25) / 0.75) }
+}

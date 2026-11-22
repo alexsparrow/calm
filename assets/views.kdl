@@ -57,6 +57,9 @@ view "Grid" {
     use "colour"
     color measure="$measure" split="$split" compose="$compose" palette="$split"
     detail day-span="$span"
+    // Your energy as a rail beside each day: its width and colour follow energy, on the
+    // same scale as Demand colouring, so a well-matched event is the colour of the rail beside it.
+    rail show="energy" style="rail"
 }
 
 view "Lanes" {
