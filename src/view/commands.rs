@@ -186,9 +186,7 @@ impl CalmView {
     /// (session channels go back to the view's own).
     fn toggle(&mut self, a: &[(String, String)], cx: &mut Context<Self>) -> bool {
         let on = a.iter().all(|(k, v)| self.setting(k).as_deref() == Some(v.as_str()));
-        let params = a.iter().any(|(k, _)| self.spec().param(k).is_some());
-        // Channels are the session's, so their toggles are too; params belong to a view.
-        let key = (if params { self.spec().name.clone() } else { String::new() }, Command::Toggle(a.to_vec()).to_string());
+        let key = self.toggle_key(a);
         if on {
             let back = self.restore.remove(&key).unwrap_or_else(|| a.iter().map(|(k, _)| (k.clone(), None)).collect());
             for (k, v) in back {
@@ -206,6 +204,38 @@ impl CalmView {
         }
         self.restore.insert(key, before);
         true
+    }
+
+    /// Where a toggle keeps what to put back. Channels are the session's, so their toggles
+    /// are too; params belong to a view.
+    fn toggle_key(&self, a: &[(String, String)]) -> (String, String) {
+        let params = a.iter().any(|(k, _)| self.spec().param(k).is_some());
+        (if params { self.spec().name.clone() } else { String::new() }, Command::Toggle(a.to_vec()).to_string())
+    }
+
+    /// Overlays on now: turned on, and still as they left things.
+    pub(super) fn active_overlays(&self) -> Vec<String> {
+        let on = |set: &[(String, String)]| self.restore.contains_key(&self.toggle_key(set)) && set.iter().all(|(k, v)| self.setting(k).as_deref() == Some(v.as_str()));
+        self.conf.overlays.iter().filter(|o| on(&o.set)).map(|o| o.name.clone()).collect()
+    }
+
+    /// Session settings no overlay that's on accounts for (from `:set`, say).
+    pub(super) fn loose_settings(&self) -> Vec<(String, String)> {
+        let active = self.active_overlays();
+        let mut loose: Vec<(String, String)> = self
+            .over
+            .iter()
+            .filter(|(k, v)| !self.conf.overlays.iter().any(|o| active.contains(&o.name) && o.set.iter().any(|(ok, ov)| ok == *k && ov == *v)))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        loose.sort();
+        loose
+    }
+
+    /// Lets go of a session setting: back to the view's own.
+    pub(super) fn clear_setting(&mut self, name: &str) {
+        self.over.remove(name);
+        self.dirty = true;
     }
 
     /// Sets a param of this view, or a session channel.

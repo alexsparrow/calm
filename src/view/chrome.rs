@@ -93,6 +93,7 @@ impl CalmView {
         let sync_line = self.status_line();
         let key = hash(&title) ^ hash(&subtitle);
         let ChipLayout { row: primary, names, compact, .. } = self.chip_layout();
+        let pills = self.overlay_pills(cx);
         let chips = primary.iter().enumerate().map(|(k, &c)| {
             let hidden = self.hidden[c];
             let dot = th.cals[c].dot;
@@ -153,7 +154,8 @@ impl CalmView {
                             .child(subtitle)
                             .children(sync_line.map(|(text, problem)| {
                                 div().text_color(if problem { th.now } else { th.faint }).child(format!("· {text}"))
-                            })),
+                            }))
+                            .children(pills),
                     )
                     .with_animation(
                         ("title", key),
@@ -1296,6 +1298,37 @@ impl CalmView {
                     cx.notify();
                 }))
         });
+        // Every overlay, ticked when on, with its key if it has one.
+        let active = self.active_overlays();
+        let loose = self.loose_settings();
+        let overlay_rows: Vec<_> = self
+            .conf
+            .overlays
+            .iter()
+            .map(|o| {
+                let on = active.contains(&o.name);
+                let cmd = crate::keys::Command::Overlay(o.name.clone());
+                let key = self.conf.keys.get(crate::keys::Ctx::Normal).iter().find(|b| b.command == cmd).map(|b| b.chord.label()).unwrap_or_default();
+                row(gpui::ElementId::Name(format!("menu-overlay-{}", o.name).into()))
+                    .child(div().w(px(12.)).text_color(th.ink).child(if on { "\u{2713}" } else { "" }))
+                    .child(div().flex_1().child(o.name.clone()))
+                    .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(key))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.run(&cmd, cx);
+                        cx.notify();
+                    }))
+            })
+            .chain(loose.into_iter().map(|(k, v)| {
+                row(gpui::ElementId::Name(format!("menu-set-{k}").into()))
+                    .child(div().w(px(12.)).text_color(th.ink).child("\u{2713}"))
+                    .child(div().flex_1().child(format!("{k}: {v}")))
+                    .child(div().text_size(px(11.5)).text_color(th.faint).child("Clear"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.clear_setting(&k);
+                        cx.notify();
+                    }))
+            }))
+            .collect();
         let action = |id: &'static str, label: &'static str, key: &'static str| {
             row(id.into()).child(div().flex_1().child(label)).child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(key))
         };
@@ -1319,6 +1352,7 @@ impl CalmView {
                 .shadow_lg()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
+                .when(!overlay_rows.is_empty(), |d| d.child(heading("Overlays")).children(overlay_rows).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
                 .child(action("menu-new", "New event", "S").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
                     this.toggle_mode(true);
@@ -1357,6 +1391,72 @@ impl CalmView {
     }
 }
 
+impl CalmView {
+    /// What the pills say: each overlay that's on, then each loose session setting; or, in
+    /// a narrow window with more than one, how many.
+    fn pill_labels(&self) -> Vec<String> {
+        let mut labels = self.active_overlays();
+        labels.extend(self.loose_settings().into_iter().map(|(k, v)| format!("{k}: {v}")));
+        if labels.len() > 1 && self.viewport.0 < 900. {
+            return vec![format!("{} on", labels.len())];
+        }
+        labels
+    }
+
+    /// Pills after the subtitle for what's laid over the view: overlays that are on, and
+    /// settings from `:set`. Clicking one turns it off; when they're folded into a count,
+    /// it opens the menu, which lists them.
+    fn overlay_pills(&self, cx: &mut Context<Self>) -> Vec<impl IntoElement + use<>> {
+        let th = self.theme;
+        let overlays = self.active_overlays();
+        let loose = self.loose_settings();
+        let folded = overlays.len() + loose.len() > 1 && self.viewport.0 < 900.;
+        let pill = |id: String, label: String| {
+            div()
+                .id(gpui::ElementId::Name(id.into()))
+                .ml(px(2.))
+                .px(px(8.))
+                .h(px(18.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .rounded_full()
+                .bg(with_alpha(th.ink, 0.07))
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(th.muted)
+                .cursor_pointer()
+                .hover(move |d| d.bg(with_alpha(th.ink, 0.12)).text_color(th.ink))
+                .child(label)
+        };
+        if folded {
+            let n = overlays.len() + loose.len();
+            return vec![pill("pill-count".into(), format!("{n} on")).on_click(cx.listener(|this, _, _, cx| {
+                this.menu_on = true;
+                cx.notify();
+            }))];
+        }
+        let close = || div().text_color(th.faint).child("\u{d7}");
+        let mut pills: Vec<_> = overlays
+            .into_iter()
+            .map(|name| {
+                let cmd = crate::keys::Command::Overlay(name.clone());
+                pill(format!("pill-{name}"), name).child(close()).on_click(cx.listener(move |this, _, _, cx| {
+                    this.run(&cmd, cx);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        pills.extend(loose.into_iter().map(|(k, v)| {
+            pill(format!("pill-set-{k}"), format!("{k}: {v}")).child(close()).on_click(cx.listener(move |this, _, _, cx| {
+                this.clear_setting(&k);
+                cx.notify();
+            }))
+        }));
+        pills
+    }
+}
+
 /// Which calendars get chips, and how they're labelled; the rest go in the menu.
 pub(super) struct ChipLayout {
     pub row: Vec<usize>,
@@ -1374,7 +1474,7 @@ impl CalmView {
     pub(super) fn chip_layout(&self) -> ChipLayout {
         let (title, subtitle) = self.title();
         let cut = |s: &str, n: usize| -> String { if s.chars().count() > n { s.chars().take(n - 1).chain(std::iter::once('…')).collect() } else { s.to_string() } };
-        let status_len = self.status_line().map_or(0, |(t, _)| t.chars().count() + 3);
+        let status_len = self.status_line().map_or(0, |(t, _)| t.chars().count() + 3) + self.pill_labels().iter().map(|l| l.chars().count() + 5).sum::<usize>();
         let title_w = (title.chars().count() as f32 * 11.5).max((subtitle.chars().count() + status_len) as f32 * 6.6);
         // Measured: the clock column ~70 (60 compact), spacers 24, + ↕ with their gaps ~100, ‹ Today › and ☰ ~175, padding 56, gap 16.
         let clock_w = if self.viewport.0 < 800. { 60. } else { 70. };

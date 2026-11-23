@@ -465,8 +465,11 @@ params_open: opts.controls,
             over: Default::default(),
         };
         this.refresh_travel();
-        if opts.travel {
-            this.over.extend([("rail".to_string(), "travel".to_string()), ("zones".to_string(), "visible".to_string())]);
+        // `--travel`: the Travel overlay on, as `W` would turn it on.
+        if let Some(o) = opts.travel.then(|| this.conf.overlays.iter().find(|o| o.name == "Travel").cloned()).flatten() {
+            let key = (String::new(), crate::keys::Command::Toggle(o.set.clone()).to_string());
+            this.restore.insert(key, o.set.iter().map(|(k, _)| (k.clone(), None)).collect());
+            this.over.extend(o.set);
         }
         this.restat();
         this.resolve_place(&config.settings);
