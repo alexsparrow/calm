@@ -13,6 +13,7 @@ Done:
 - **Themes:** colour tokens as data, light and dark built in, your own in calm.kdl.
 - **Calendars from your accounts**, with labels, colours and secondary calendars.
 - **Nix flake packaging.**
+- **Search and date jumps:** `/` with facets, a match list and timeline, `n`/`N`; `:` dates.
 
 Next, roughly in order:
 
@@ -26,22 +27,10 @@ Next, roughly in order:
    status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
    They're toggled from the top bar, with calendar visibility as one built-in filter, and views
    can declare their own. The drawer gets "only this series" and "only with this person". A
-   filter either hides non-matching events or dims them. Needs attendees in the `Event` model
-   (the cache already stores them).
-   - **Search (`/`)** is an ad-hoc filter, typed vim-style.
-     - Typing jumps to the best title match (incremental, like vim's `incsearch`). `Enter` selects
-       it, and `n`/`N` step through matches across all dates, not only what's on screen.
-     - A list of matches opens beside the calendar, which is clickable and moved through with `j`/`k`.
-     - Facet prefixes search beyond titles: `with:` (people), `in:` (calendar), `at:` (location),
-       `series:`, `is:tentative`, and later rule tags. The palette offers them as you type.
-     - Saving a search turns it into a filter.
-   - **Date jumps (`:`)** read the month or year from the view:
-     - `:31` is the 31st of the month in view.
-     - `:12-31` is 31 December of the year in view, and `:2027-03-04` is exact.
-     - `:mon` is the next Monday; `:+2w` and `:-3d` are relative.
-     - Dates clamp, so `:31` in a 30-day month is the 30th.
-     - Open question: whether "in view" or "today" should anchor them (in view is the proposal:
-       you navigated there for a reason).
+   filter either hides non-matching events or dims them. Events already carry their people, and
+   search's query language (`with:` `in:` `at:` `series:` `is:`) is the start of the filter one.
+   Search (`/`) and date jumps (`:`) are done (see the README); saving a search as a filter
+   comes with this.
 4. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
    set, tag or adjust derived properties) whose outputs the grammar can use as channels. Ordered,
    explainable (the drawer shows which rules fired). Small expression language before any embedded

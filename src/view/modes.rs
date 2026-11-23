@@ -1,6 +1,6 @@
 //! Deliberate editing. Clicks and drags only ever select, until you enter a mode:
 //!
-//! * **New** (N, or + at the top): click where the event starts, then where it ends.
+//! * **New** (S for schedule, or + at the top): click where the event starts, then where it ends.
 //! * **Adjust** (A, or ↕ at the top): drag an event to move it, or one of its ends to resize it.
 //!
 //! Both snap to a step you choose and can keep to your free time. Each is also driven from

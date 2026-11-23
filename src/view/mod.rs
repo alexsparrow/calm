@@ -13,6 +13,7 @@ mod chrome;
 mod editing;
 mod input;
 mod modes;
+mod search;
 mod scene;
 
 use std::cell::Cell;
@@ -238,6 +239,15 @@ pub struct CalmView {
     free_only: bool,
     cursor: Option<modes::Slot>,
     hover_grip: Option<modes::Grip>,
+    /// The `/` or `:` field (and one asked for, to open on the next frame), whether its text
+    /// changed since the last search, the last search's results, and a day just jumped to.
+    prompt: Option<search::Prompt>,
+    pending_prompt: Option<search::Kind>,
+    prompt_query_dirty: bool,
+    found: Option<search::Found>,
+    jump_mark: Option<(i32, Instant)>,
+    /// Text to open the field with (`--search`, `--jump`).
+    prompt_seed: Option<String>,
     /// `--picker`: open this picker once the drawer has an event.
     pending_picker: Option<u8>,
     hud_on: bool,
@@ -393,7 +403,7 @@ impl CalmView {
             drawer: Spring::new(0.),
             tooltip: Spring::new(0.),
             help: Spring::new(0.),
-            help_on: false,
+            help_on: opts.help,
             menu: Spring::new(0.),
             menu_on: opts.menu,
 params_open: opts.controls,
@@ -409,6 +419,12 @@ params_open: opts.controls,
             free_only: false,
             cursor: None,
             hover_grip: None,
+            prompt: None,
+            pending_prompt: None,
+            prompt_query_dirty: false,
+            found: None,
+            jump_mark: None,
+            prompt_seed: None,
             pending_picker: opts.picker,
             hud_on: opts.bench,
             mouse: (-1., -1.),
@@ -441,6 +457,13 @@ params_open: opts.controls,
         };
         this.restat();
         this.resolve_place(&config.settings);
+        if let Some(q) = opts.search.clone() {
+            this.open_prompt(search::Kind::Search);
+            this.prompt_seed = Some(q);
+        } else if let Some(q) = opts.jump.clone() {
+            this.open_prompt(search::Kind::Jump);
+            this.prompt_seed = Some(q);
+        }
         match opts.mode.as_deref() {
             Some("new") => this.toggle_mode(true),
             Some("adjust") => this.toggle_mode(false),
@@ -582,8 +605,15 @@ params_open: opts.controls,
         self.lens().mark == Mark::Heat
     }
 
+    /// Day-cell statistics, over the events a search leaves (all of them without one).
     fn restat(&mut self) {
-        self.cells = color::cell_stats(&self.data.events, &self.hidden, DAYS as usize);
+        self.cells = match self.found.as_ref().filter(|f| !f.hits.is_empty()) {
+            Some(f) => {
+                let kept: Vec<model::Event> = self.data.events.iter().zip(&f.hits).filter(|(_, h)| **h).map(|(e, _)| e.clone()).collect();
+                color::cell_stats(&kept, &self.hidden, DAYS as usize)
+            }
+            None => color::cell_stats(&self.data.events, &self.hidden, DAYS as usize),
+        };
     }
 
     fn set_data(&mut self, mut data: Dataset) {
@@ -604,6 +634,7 @@ params_open: opts.controls,
         self.hovered = None;
         self.dirty = true;
         self.restat();
+        self.research();
     }
 
     fn set_preset(&mut self, preset: usize) {
@@ -863,7 +894,13 @@ params_open: opts.controls,
         let spec = self.spec().clone();
         let mark = self.lens().mark;
         let arr = self.arr();
-        let targets = layout::solve(&self.data.events, &spec, mark, &self.hidden);
+        let mut targets = layout::solve(&self.data.events, &spec, mark, &self.hidden);
+        // A search dims what doesn't match.
+        for (i, t) in targets.iter_mut().enumerate() {
+            if self.search_dims(i) {
+                t.alpha *= search::DIM;
+            }
+        }
         for (i, t) in targets.into_iter().enumerate() {
             // Stagger by screen position so a lens change reads as a wave.
             let delay = if self.stagger {
@@ -1079,7 +1116,17 @@ params_open: opts.controls,
             "z" => self.zones_on = !self.zones_on,
             "m" => self.menu_on = !self.menu_on,
             "o" => self.changes_on = !self.changes_on,
-            "n" => self.toggle_mode(true),
+            // After a search, n / N step through its matches (as in vim).
+            "n" | "N" if k.modifiers.shift || k.key == "N" => {
+                self.next_match(-1);
+            }
+            "n" => {
+                self.next_match(1);
+            }
+            "s" if !k.modifiers.shift => self.toggle_mode(true),
+            "/" if !k.modifiers.shift => self.open_prompt(search::Kind::Search),
+            ":" => self.open_prompt(search::Kind::Jump),
+            ";" if k.modifiers.shift => self.open_prompt(search::Kind::Jump),
             "a" => self.toggle_mode(false),
             "e" => {
                 self.editor_on = !self.editor_on;
@@ -1090,7 +1137,8 @@ params_open: opts.controls,
             "?" => self.help_on = !self.help_on,
             "/" if k.modifiers.shift => self.help_on = !self.help_on,
             "`" => self.hud_on = !self.hud_on,
-            "s" => {
+            // Shift+S: triple the demo data (a stress test).
+            "s" | "S" => {
                 self.stress = !self.stress;
                 self.set_data(model::generate(if self.stress { 3 } else { 1 }));
             }
@@ -1106,6 +1154,8 @@ params_open: opts.controls,
                     self.help_on = false;
                 } else if self.editor_on {
                     self.editor_on = false;
+                } else if self.found.is_some() {
+                    self.clear_search(false);
                 } else {
                     self.selected = None;
                 }
@@ -1294,6 +1344,8 @@ fn theme_for(override_dark: Option<bool>, system_dark: bool, translucent: Option
 impl Render for CalmView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_drawer(window, cx);
+        self.sync_prompt(window, cx);
+        self.refresh_search(cx);
         let t0 = Instant::now();
         let size = window.viewport_size();
         let viewport = (f32::from(size.width), f32::from(size.height));
@@ -1369,7 +1421,7 @@ impl Render for CalmView {
                 self.selected = self.hit(pos);
             }
         }
-        self.animating = moving || built.relabel || waiting || self.dirty || self.bench.is_some();
+        self.animating = moving || built.relabel || waiting || self.dirty || self.bench.is_some() || self.jump_mark.is_some();
         if self.animating {
             window.request_animation_frame();
         }
@@ -1385,8 +1437,13 @@ impl Render for CalmView {
             .text_color(th.ink)
             .track_focus(&self.focus)
             // While you type in a field, keys are text, not shortcuts.
-            .on_key_down(cx.listener(|this, ev, window, cx| {
-                if !this.typing(window, cx) {
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                if this.prompting(window, cx) {
+                    let k = &ev.keystroke;
+                    if this.prompt_key(&k.key, k.modifiers.control, cx) {
+                        cx.notify();
+                    }
+                } else if !this.typing(window, cx) {
                     this.on_key(ev, cx)
                 }
             }))
@@ -1429,6 +1486,7 @@ impl Render for CalmView {
             .children(self.editor_panel(cx))
             .children(self.menu_panel(cx))
             .children(self.mode_bar(cx))
+            .children(self.prompt_panel(cx))
             .children(self.toast_card(cx))
             .children(self.changes_panel(cx))
             .children(self.help_card())
@@ -1446,8 +1504,13 @@ pub struct Options {
     pub menu: bool,
     /// Open with the changes panel showing (screenshots).
     pub changes: bool,
+    /// Open with the keyboard help showing (screenshots).
+    pub help: bool,
     /// Start in an editing mode: `new` or `adjust` (screenshots).
     pub mode: Option<String>,
+    /// Open `/` or `:` with this text typed (screenshots).
+    pub search: Option<String>,
+    pub jump: Option<String>,
     /// Open the drawer's picker (0 date, 1 start, 2 end) once an event is selected (screenshots).
     pub picker: Option<u8>,
     /// Open with the controls popup showing, when they're folded into a button (screenshots).
@@ -1484,6 +1547,9 @@ impl Options {
                 "--menu" => o.menu = true,
                 "--changes" => o.changes = true,
                 "--mode" => o.mode = args.next(),
+                "--help-card" => o.help = true,
+                "--search" => o.search = args.next(),
+                "--jump" => o.jump = args.next(),
                 "--picker" => o.picker = args.next().and_then(|n| n.parse().ok()),
                 "--controls" => o.controls = true,
                 "--cycle" => o.cycle = true,

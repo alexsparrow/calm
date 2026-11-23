@@ -274,7 +274,7 @@ selects. To change times you enter a mode, and its bar under the top bar says wh
 click does. The same works in every view, cartesian or dial; in views without a time of day
 (aggregates, lists) the unit is a whole day, and events made there are all-day.
 
-- **New** (`N`, or + at the top): click where the event starts, then where it ends. The span
+- **New** (`S` for schedule, or + at the top): click where the event starts, then where it ends. The span
   follows the pointer between the two clicks, with its date, times and length beside it.
   Clicking the same spot twice makes an hour. Clicking above a day's time axis (its all-day
   band) makes an all-day event. It goes to your `default-calendar`, else your primary, and opens

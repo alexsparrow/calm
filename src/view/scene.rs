@@ -398,7 +398,7 @@ impl CalmView {
             let e = &self.data.events[i];
             let c = self.mark_colors(e);
             let hover = m.hover.x.clamp(0., 1.);
-            let selected = self.selected.is_some_and(|s| self.data.events[s].group == e.group);
+            let selected = self.selected.is_some_and(|s| self.data.events[s].group == e.group) || self.current_match() == Some(e.group);
             let tentative = e.status == Status::Tentative;
             let mut fill = c.fill.blend(with_alpha(c.edge, 0.18 * hover));
             // Stripes over aggregate cells need the strong colour to show at all.
@@ -514,6 +514,17 @@ impl CalmView {
 
         let (n_labels, placed) = if skip("labels") { (0, Vec::new()) } else { self.labels(p, &arr, &boxes, window, &mut frame) };
         self.paint_ghost(&arr, window, &mut frame);
+        // A day just jumped to (`:`): outlined for a moment.
+        if let Some((day, at)) = self.jump_mark {
+            let t = at.elapsed().as_secs_f32() / 1.6;
+            if t < 1. {
+                let c = arr.cell_inset(day);
+                let a = (1. - t) * (1. - t);
+                frame.push(FRONT, Cmd::Quad { b: c, r: 6., color: with_alpha(th.now, 0.08 * a), border: Some((with_alpha(th.now, a), 2., false)) });
+            } else {
+                self.jump_mark = None;
+            }
+        }
 
         // "+3" where a month-view cell has more events than room.
         for (day, n) in overflow {

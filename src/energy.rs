@@ -176,6 +176,7 @@ mod tests {
             all_day: None,
             sync: None,
             edit: None,
+            people: crate::model::no_people(),
         };
         let events = [meeting(9., 3.)];
         let curve = m.day(events.iter());

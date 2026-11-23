@@ -129,6 +129,14 @@ pub struct Event {
     pub sync: Option<crate::sync::outbox::State>,
     /// Where it lives, for editing; `None` for demo data and read-only feeds.
     pub edit: Option<std::sync::Arc<EditRef>>,
+    /// Who's on it: the organiser and guests, by name where known, else address.
+    pub people: People,
+}
+
+pub type People = std::sync::Arc<[SharedString]>;
+
+pub fn no_people() -> People {
+    std::sync::Arc::from(Vec::new())
 }
 
 /// An event as its calendar service knows it: what an edit needs.
@@ -255,6 +263,22 @@ const FAMILY: &[(&str, Option<&str>)] = &[
 ];
 const FOCUS: &[&str] = &["Deep work", "Writing", "Prototype", "Research", "Strategy doc"];
 
+/// Who's at a demo event, by its title.
+fn demo_people(title: &str) -> People {
+    let names: &[&str] = match title {
+        "Standup" => &["Priya Shah", "Sam Okafor", "Lena Ito", "Marco Ruiz"],
+        "Planning" | "Retro" => &["Priya Shah", "Sam Okafor", "Lena Ito"],
+        "Hiring loop" => &["Lena Ito", "Dana Wells"],
+        "Budget review" => &["Marco Ruiz", "Dana Wells"],
+        "Partner check-in" => &["Sam Okafor", "Ana Costa"],
+        "Roadmap workshop" => &["Priya Shah", "Marco Ruiz", "Ana Costa", "Lena Ito"],
+        t if t.starts_with("1:1 with ") => return std::sync::Arc::from(vec![SharedString::from(t.trim_start_matches("1:1 with ").to_string() + " Shah")]),
+        "Family dinner" | "Movie night" => &["Jo", "Kit"],
+        _ => &[],
+    };
+    names.iter().map(|n| SharedString::from(*n)).collect()
+}
+
 /// `multiplier` > 1 densifies the dataset for stress testing.
 pub fn generate(multiplier: usize) -> Dataset {
     let (origin, today) = range();
@@ -277,6 +301,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             all_day: None,
             sync: None,
             edit: None,
+            people: no_people(),
         });
     };
 
@@ -333,6 +358,7 @@ pub fn generate(multiplier: usize) -> Dataset {
     }
 
     for e in &mut events {
+        e.people = demo_people(&e.title);
         e.notes = match e.calendar {
             0 if e.title.starts_with("1:1") => Some("Career goals, blockers, feedback both ways.".into()),
             0 if e.status == Status::Tentative => Some("Awaiting confirmation from the organiser.".into()),
@@ -359,6 +385,7 @@ pub fn generate(multiplier: usize) -> Dataset {
             all_day: None,
             sync: None,
             edit: None,
+            people: no_people(),
         };
         events.extend(all_day_pieces(e, first, first + days));
     };
@@ -509,6 +536,10 @@ pub fn from_occurrences(
     for (group, s) in occurrences.iter().enumerate() {
         let o = &s.occ;
         let calendar = calendar_of(&s.source);
+        let people: People = {
+            let mut seen = std::collections::HashSet::new();
+            o.organizer.iter().chain(&o.attendees).filter(|p| seen.insert(p.to_lowercase())).map(|p| SharedString::from(p.clone())).collect()
+        };
         let event = |day: i32, start_min: f32, dur_min: f32| Event {
             title: SharedString::from(o.summary.clone()),
             calendar,
@@ -539,6 +570,7 @@ pub fn from_occurrences(
                     description: o.description.clone(),
                 })
             }),
+            people: people.clone(),
         };
         if o.all_day {
             // End is exclusive; a zero-length all-day event still covers its date.
@@ -595,6 +627,7 @@ mod all_day_tests {
             all_day: None,
             sync: None,
             edit: None,
+            people: no_people(),
         }
     }
 

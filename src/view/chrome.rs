@@ -18,6 +18,8 @@ use crate::theme::with_alpha;
 
 pub const TOPBAR_H: f32 = 64.;
 pub const DRAWER_W: f32 = 320.;
+/// Orange: an all-day event that an event falls on (red is a clash with a timed one).
+const ALL_DAY_OVERLAP: gpui::Hsla = gpui::Hsla { h: 25. / 360., s: 0.85, l: 0.58, a: 1. };
 const SWITCH_W: f32 = 76.;
 
 fn hash(s: &str) -> usize {
@@ -602,14 +604,21 @@ impl CalmView {
                 div().text_size(px(12.)).text_color(th.faint).child(text)
             })
             .collect();
-        let overlaps: Vec<SharedString> = self
+        // Timed clashes first (red), then the all-day events it falls on (orange): a hotel stay or
+        // a holiday is worth knowing about, but it isn't a double booking.
+        let mut seen = std::collections::HashSet::new();
+        let mut overlaps: Vec<(SharedString, bool)> = self
             .data
             .events
             .iter()
             .enumerate()
-            .filter(|(j, o)| *j != i && !self.hidden[o.calendar] && o.overlaps(e))
-            .map(|(_, o)| format!("{} · {}", o.title, fmt_range(o.start_min, o.end_min())).into())
+            .filter(|(j, o)| *j != i && o.group != e.group && !self.hidden[o.calendar] && o.overlaps(e) && seen.insert(o.group))
+            .map(|(_, o)| match o.all_day {
+                Some(_) => (format!("{} · all day", o.title).into(), true),
+                None => (format!("{} · {}", o.title, fmt_range(o.start_min, o.end_min())).into(), false),
+            })
             .collect();
+        overlaps.sort_by_key(|(_, all_day)| *all_day);
         let section = |label: &'static str| {
             div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(label.to_uppercase())
         };
@@ -741,7 +750,7 @@ impl CalmView {
                             .flex_col()
                             .gap(px(6.))
                             .child(section("Overlaps with"))
-                            .children(overlaps.into_iter().map(|o| row(o).text_color(th.now))),
+                            .children(overlaps.into_iter().map(|(o, all_day)| row(o).text_color(if all_day { ALL_DAY_OVERLAP } else { th.now }))),
                     )
                 }),
         )
@@ -757,34 +766,45 @@ impl CalmView {
             div()
                 .flex()
                 .justify_between()
+                .gap(px(16.))
                 .text_size(px(13.))
                 .when(dim, |d| d.opacity(0.45))
                 .child(div().text_color(th.muted).child(v))
-                .child(div().font_weight(FontWeight::MEDIUM).child(k))
+                .child(div().flex_none().font_weight(FontWeight::MEDIUM).child(k))
         };
-        let general = [
-            ("1 – 9, Tab", "Switch view"),
-            ("Ctrl+scroll, − =", "Zoom (day … year)"),
-            ("← →", "Previous / next"),
-            ("Scroll, ↑ ↓", "Scroll hours or time"),
-            ("Alt+scroll", "Zoom hours"),
-            ("F, click hour labels", "Full day / default hours"),
-            ("T", "Jump to today"),
-            ("E", "Edit this view"),
-            ("M", "Menu: more calendars, actions"),
-            ("N, +", "New event: click its start, then its end"),
-            ("A, \u{2195}", "Adjust: drag to move, drag ends to resize"),
-            ("[ ]  F", "In a mode: snap step · free time only"),
-            ("Delete", "Delete the selected event"),
-            ("O", "Changes waiting to sync"),
-            ("Z", "Extra time zones"),
-            ("R", "Sync calendars now"),
-            ("D", "Light / dark"),
-            ("Click", "Details · open a day or week"),
-            ("Esc", "Close"),
-            ("`", "Frame stats"),
-        ]
-        .map(|(k, v)| row(k.into(), v.into(), false));
+        let heading = |s: &str| div().mt(px(6.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(th.faint).child(s.to_uppercase());
+        let group = |title: &str, keys: &[(&str, &str)]| {
+            div().flex().flex_col().gap(px(8.)).child(heading(title)).children(keys.iter().map(|(k, v)| row(k.to_string(), v.to_string(), false)))
+        };
+        let around = group(
+            "Getting around",
+            &[
+                ("1 – 9, Tab", "Switch view"),
+                ("Ctrl+scroll, − =", "Zoom (day … year)"),
+                ("← →", "Previous / next"),
+                ("Scroll, ↑ ↓", "Scroll hours or time"),
+                ("Alt+scroll", "Zoom hours"),
+                ("F, click hour labels", "Full day / default hours"),
+                ("T", "Today"),
+                ("Click", "Details · open a day or week"),
+            ],
+        );
+        let finding = group("Finding", &[("/", "Search (with: in: at: series: is:)"), ("n  N", "Next / previous match"), (":", "Go to a date: 31, 12-31, dec, mon, +2w")]);
+        let changing = group(
+            "Changing",
+            &[
+                ("S, +", "Schedule an event"),
+                ("A, \u{2195}", "Adjust: move, resize"),
+                ("[ ]  F", "In a mode: snap · free time only"),
+                ("Delete", "Delete the selected event"),
+                ("O", "Changes waiting to sync"),
+                ("R", "Sync now"),
+            ],
+        );
+        let looking = group(
+            "Looking",
+            &[("E", "Edit this view"), ("M", "Menu: more calendars, actions"), ("Z", "Extra time zones"), ("D", "Light / dark"), ("Esc", "Close"), ("`", "Frame stats")],
+        );
         // This view's own keys, from its params; dimmed when not offered at the current zoom.
         let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
         let view_keys: Vec<_> = spec
@@ -797,20 +817,32 @@ impl CalmView {
                 Some(row(k.to_uppercase(), what, !spec.active(p, values, mark)))
             })
             .collect();
-        let view_title = (!view_keys.is_empty()).then(|| {
-            div().mt(px(8.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(th.faint).child(format!("{} view", spec.name).to_uppercase())
-        });
+        let view_group = (!view_keys.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(heading(&format!("{} view", spec.name))).children(view_keys));
+        // Two columns when there's room, else one that scrolls.
+        let wide = self.viewport.0 >= 760.;
+        let column = || div().flex_1().min_w_0().flex().flex_col().gap(px(14.));
+        let body = if wide {
+            div().flex().gap(px(32.)).child(column().child(around).child(finding)).child(column().child(changing).child(looking).children(view_group))
+        } else {
+            column().child(around).child(finding).child(changing).child(looking).children(view_group)
+        };
         Some(
             div()
                 .absolute()
-                .size_full()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(with_alpha(th.shadow, t))
                 .child(
                     div()
-                        .w(px(380.))
+                        .id("help")
+                        .w(px(if wide { 720. } else { (self.viewport.0 - 32.).min(400.) }))
+                        .max_h(px(self.viewport.1 - 48.))
+                        .overflow_y_scroll()
                         .opacity(t.clamp(0., 1.))
                         .mt(px(12. * (1. - t)))
                         .p(px(24.))
@@ -822,10 +854,8 @@ impl CalmView {
                         .border_1()
                         .border_color(th.border)
                         .shadow_lg()
-                        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).mb(px(4.)).child("Keyboard"))
-                        .children(general)
-                        .children(view_title)
-                        .children(view_keys),
+                        .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Keyboard"))
+                        .child(body),
                 ),
         )
     }
@@ -1259,7 +1289,7 @@ impl CalmView {
                 .shadow_lg()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
-                .child(action("menu-new", "New event", "N").on_click(cx.listener(|this, _, _, cx| {
+                .child(action("menu-new", "New event", "S").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
                     this.toggle_mode(true);
                     cx.notify();

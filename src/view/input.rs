@@ -100,6 +100,14 @@ impl TextInput {
         &self.content
     }
 
+    /// Replaces the text, with the cursor at the end.
+    pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.content = text.into();
+        self.selected_range = self.content.len()..self.content.len();
+        self.marked_range = None;
+        cx.notify();
+    }
+
     /// Selects all the text (so typing replaces it).
     pub fn select_everything(&mut self, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
