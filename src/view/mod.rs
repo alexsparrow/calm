@@ -188,6 +188,10 @@ pub struct CalmView {
     calendars: Vec<Calendar>,
     /// How energy is modelled (calm.kdl's `energy`).
     energy: crate::energy::EnergyModel,
+    /// Time-zone moves found in your events (see `crate::travel`), and whether they're shown
+    /// (`W`: the zone rail in every timed view, and hour columns for the zones they visit).
+    travel: Option<crate::travel::Travel>,
+    travel_on: bool,
     /// Where you are, for daylight: calm.kdl's `location`, else your zone's city.
     place: Option<crate::sun::Place>,
     now_min: f32,
@@ -454,7 +458,11 @@ params_open: opts.controls,
             data,
             energy,
             place: None,
+            travel: None,
+            travel_on: false,
         };
+        this.refresh_travel();
+        this.travel_on = opts.travel && this.travel.is_some();
         this.restat();
         this.resolve_place(&config.settings);
         if let Some(q) = opts.search.clone() {
@@ -537,11 +545,27 @@ params_open: opts.controls,
 
     /// Extra zones labelling the current lens's time axis (none if the grammar narrows to primary).
     fn shown_zones(&self) -> Vec<chrono_tz::Tz> {
-        if self.zones_on && self.spec().zones == crate::spec::ZoneAxes::All {
-            self.zones.extra.clone()
-        } else {
-            Vec::new()
+        if self.spec().zones != crate::spec::ZoneAxes::All {
+            return Vec::new();
         }
+        let mut zones = if self.zones_on { self.zones.extra.clone() } else { Vec::new() };
+        // Travelling (`W`): the zones your moves in view go to and from, unless already shown.
+        if let (true, Some(t)) = (self.travel_on, &self.travel) {
+            let l = self.lens();
+            let (s, n) = (l.start.target.floor() as i32, l.zoom.target.exp2().ceil() as i32);
+            let at = |d: i32| self.data.date(d).and_hms_opt(0, 0, 0).unwrap().and_utc();
+            let date = self.data.date(self.data.today);
+            let shown = |z: chrono_tz::Tz, zones: &[chrono_tz::Tz]| {
+                let off = crate::zones::offset(z, date);
+                off == self.zones.primary_offset(date) || zones.iter().any(|o| crate::zones::offset(*o, date) == off)
+            };
+            for tz in t.zones_between(at(s - 1), at(s + n + 1)) {
+                if !shown(tz, &zones) {
+                    zones.push(tz);
+                }
+            }
+        }
+        zones
     }
 
     /// Left gutter wide enough for the labels the current lens draws there.
@@ -635,6 +659,13 @@ params_open: opts.controls,
         self.dirty = true;
         self.restat();
         self.research();
+        self.refresh_travel();
+    }
+
+    /// Reads time-zone moves from the cache (real data only). Nothing shows unless an event
+    /// moves between zones or a view's rail is `zone`.
+    fn refresh_travel(&mut self) {
+        self.travel = self.sync.is_some().then(crate::travel::load).flatten();
     }
 
     fn set_preset(&mut self, preset: usize) {
@@ -1114,6 +1145,10 @@ params_open: opts.controls,
             "t" => self.go_today(),
             "f" => self.toggle_full_day(),
             "z" => self.zones_on = !self.zones_on,
+            "w" => {
+                self.travel_on = !self.travel_on && self.travel.is_some();
+                self.dirty = true;
+            }
             "m" => self.menu_on = !self.menu_on,
             "o" => self.changes_on = !self.changes_on,
             // After a search, n / N step through its matches (as in vim).
@@ -1506,6 +1541,8 @@ pub struct Options {
     pub changes: bool,
     /// Open with the keyboard help showing (screenshots).
     pub help: bool,
+    /// Start with travel shown, as `W` does.
+    pub travel: bool,
     /// Start in an editing mode: `new` or `adjust` (screenshots).
     pub mode: Option<String>,
     /// Open `/` or `:` with this text typed (screenshots).
@@ -1548,6 +1585,7 @@ impl Options {
                 "--changes" => o.changes = true,
                 "--mode" => o.mode = args.next(),
                 "--help-card" => o.help = true,
+                "--travel" => o.travel = true,
                 "--search" => o.search = args.next(),
                 "--jump" => o.jump = args.next(),
                 "--picker" => o.picker = args.next().and_then(|n| n.parse().ok()),
@@ -1955,7 +1993,15 @@ impl CalmView {
         if spec.coord != Coord::Cartesian || !timed || mark != spec.mark {
             return None;
         }
-        spec.rail(&self.values[p], mark).filter(|(kind, _)| *kind != crate::spec::Rail::Daylight || self.place.is_some())
+        // Travelling (`W`): the zone rail, whatever the view's own rail is.
+        if self.travel_on && self.travel.is_some() {
+            return Some((crate::spec::Rail::Zone, false));
+        }
+        spec.rail(&self.values[p], mark).filter(|(kind, _)| match kind {
+            crate::spec::Rail::Daylight => self.place.is_some(),
+            crate::spec::Rail::Zone => self.travel.is_some(),
+            crate::spec::Rail::Energy => true,
+        })
     }
 
     /// Where you are: the configured location, else your zone's principal city.

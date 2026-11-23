@@ -373,6 +373,8 @@ impl Loader {
                         self.settings.text.push(node.to_string());
                     }
                 }
+                // Travel needs no switch any more (the `zone` rail is the opt-in); still accepted.
+                "travel" => {}
                 "default-calendar" => {
                     self.check_props(&at, node, &[]);
                     if let Some(c) = self.arg_str(&at, node, 0, "a calendar name") {
@@ -1099,7 +1101,7 @@ impl Loader {
             ("color compose", &color.compose, Compose::NAMES),
             ("color palette", &color.palette, &["scale", "calendar", "true", "false"][..]),
             ("detail day-span", &day_span, &["true", "false"][..]),
-            ("rail show", &rail, &["off", "energy", "daylight"][..]),
+            ("rail show", &rail, &["off", "energy", "daylight", "zone"][..]),
             ("rail style", &rail_style, &["rail", "strip"][..]),
         ] {
             match r {

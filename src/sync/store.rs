@@ -415,6 +415,11 @@ impl Store {
     }
 
     /// The raw text of each stored component of a source (Google keeps each event's JSON).
+    /// Every cached event's raw form, from all sources (for travel; see `crate::travel`).
+    pub fn all_raw(&self) -> rusqlite::Result<Vec<String>> {
+        self.conn.prepare("SELECT raw FROM components")?.query_map([], |r| r.get(0))?.collect()
+    }
+
     pub fn raw_components(&self, source: &str) -> rusqlite::Result<Vec<String>> {
         self.conn.prepare("SELECT raw FROM components WHERE source = ?1")?.query_map([source], |r| r.get(0))?.collect()
     }

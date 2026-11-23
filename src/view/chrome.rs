@@ -707,6 +707,7 @@ impl CalmView {
                             None => row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }),
                         })
                         .children(zone_rows)
+                        .children(self.travel_row(e))
                         .child(match &self.drawer_edit {
                             Some(d) => div().mt(px(4.)).px(px(8.)).py(px(3.)).rounded(px(7.)).border_1().border_color(th.border).bg(th.bg).child(d.location.clone()),
                             None => div().children(e.location.clone().map(row)),
@@ -803,7 +804,7 @@ impl CalmView {
         );
         let looking = group(
             "Looking",
-            &[("E", "Edit this view"), ("M", "Menu: more calendars, actions"), ("Z", "Extra time zones"), ("D", "Light / dark"), ("Esc", "Close"), ("`", "Frame stats")],
+            &[("E", "Edit this view"), ("M", "Menu: more calendars, actions"), ("Z", "Extra time zones"), ("W", "Travel: zone rail and the zones you visit"), ("D", "Light / dark"), ("Esc", "Close"), ("`", "Frame stats")],
         );
         // This view's own keys, from its params; dimmed when not offered at the current zoom.
         let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
@@ -966,7 +967,7 @@ const EDIT_ROWS: [EditRow; 11] = [
     ("Mark", "mark", None, &[("Block", "block"), ("Pill", "pill"), ("List", "list"), ("Heat", "heat")]),
     ("Time zones", "zones", None, &[("All", "all"), ("Primary", "primary")]),
     ("All-day events", "all-day", None, &[("Shown", "shown"), ("Hidden", "hidden")]),
-    ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight")]),
+    ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight"), ("Zone", "zone")]),
     ("Rail style", "rail", Some("style"), &[("Width + colour", "rail"), ("Colour", "strip")]),
 ];
 
@@ -1199,6 +1200,25 @@ impl CalmView {
 }
 
 impl CalmView {
+    /// For a journey between zones: its start and end in their own local times.
+    fn travel_row(&self, e: &crate::model::Event) -> Option<Div> {
+        let r = e.edit.as_ref()?;
+        let leg = self.travel.as_ref()?.leg_at(r.start)?;
+        let (d, a) = (leg.from.local(leg.depart), leg.to.local(leg.arrive));
+        let days = (a.date() - d.date()).num_days();
+        let next = if days > 0 { format!(" +{days}") } else { String::new() };
+        let text = format!(
+            "{} {} \u{2192} {}{} {}  \u{00b7}  {:+} h",
+            d.format("%H:%M"),
+            leg.from.label(leg.depart),
+            a.format("%H:%M"),
+            next,
+            leg.to.label(leg.arrive),
+            leg.shift_hours()
+        );
+        Some(div().text_size(px(13.)).text_color(self.theme.muted).child(text))
+    }
+
     /// + (new) and ↕ (adjust) at the top: enter or leave an editing mode.
     fn mode_button(&self, id: &'static str, label: &'static str, on: bool, create: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let th = self.theme;

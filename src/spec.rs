@@ -123,6 +123,8 @@ pub enum Rail {
     Energy,
     /// The sun's elevation where you are.
     Daylight,
+    /// How far your clock is from home's, while you travel (needs `travel`).
+    Zone,
 }
 
 /// Time-zone labelling of the time axis.
@@ -346,6 +348,7 @@ impl Spec {
         let kind = match self.resolve(&self.rail, values, mark).as_str() {
             "energy" => Rail::Energy,
             "daylight" => Rail::Daylight,
+            "zone" => Rail::Zone,
             _ => return None,
         };
         Some((kind, self.resolve(&self.rail_style, values, mark) != "strip"))

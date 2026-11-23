@@ -36,10 +36,26 @@ Next, roughly in order:
    - **Later:** a morning summary in place of a stream of pings; holding everything but the
      block's end during focus; notification rules once the rules engine exists.
    - Turn off Noctalia's own calendar reminders, or you'll be told twice.
-3. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
+3. **Travel and time zones** (`W`, the `zone` rail, or click a journey). Started: events whose start and end zones
+   differ are moves between zones (Google's separate start and end zones, or `TZID`s in a
+   feed). From them calm knows where you are when: `calm travel`, the `zone` rail (dashed in
+   transit, labelled with local times where journeys start and end), hour columns for the zones you visit (`W`),
+   and local times in the drawer. All of it lives in `src/travel.rs`, reading the cache's raw events, so
+   nothing else in calm knows about travel. Next:
+   - **Time where you'll be:** a view setting `zone "local"` lays each day out in the zone
+     you're in that day, with a seam where a journey jumps the clock (hours skipped east,
+     repeated west). Switching between home and local morphs the events, like changing views.
+   - **Body clock:** sleep follows local nights while the energy model's circadian phase
+     catches up at about a day per zone (faster west than east; Waterhouse et al., *Lancet*
+     2007), so jet lag shows in the energy curve and strain. "Body clock: 4 am" in the drawer.
+   - **Easier to say:** an "Arrives in…" field in the drawer (writing Google's end zone);
+     perhaps airport codes ("LHR → ICN") for events that don't carry zones.
+   - **Caveat seen in real data:** an outbound journey with no return keeps you abroad until the
+     next move, so trips need both legs.
+4. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
    layer (`hjkl` is already in, then counts and `gg`/`G`); the `:` line (date jumps, below) grows
    into a command line with fuzzy completion (`:view dial`, `:zoom year`, `:new 9-10 Focus`).
-4. **Search and filters:** filters over any event field (title, people, series, location,
+5. **Search and filters:** filters over any event field (title, people, series, location,
    status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
    They're toggled from the top bar, with calendar visibility as one built-in filter, and views
    can declare their own. The drawer gets "only this series" and "only with this person". A
@@ -47,14 +63,14 @@ Next, roughly in order:
    search's query language (`with:` `in:` `at:` `series:` `is:`) is the start of the filter one.
    Search (`/`) and date jumps (`:`) are done (see the README); saving a search as a filter
    comes with this.
-5. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
+6. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
    set, tag or adjust derived properties) whose outputs the grammar can use as channels. Ordered,
    explainable (the drawer shows which rules fired). Small expression language before any embedded
    scripting.
-6. **CalDAV** (iCloud, Fastmail) behind the same outbox.
-7. **View presets:** a library of views to share, and an editor where the plain-language
+7. **CalDAV** (iCloud, Fastmail) behind the same outbox.
+8. **View presets:** a library of views to share, and an editor where the plain-language
    grammar description is directly editable.
-8. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
+9. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
    home-manager module for calm's config.
 
 ## Ideas

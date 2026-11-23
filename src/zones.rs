@@ -142,7 +142,7 @@ fn read_config() -> Vec<(String, String)> {
 }
 
 /// UTC offset of `tz` at midday on `date`, in minutes.
-fn offset(tz: Tz, date: NaiveDate) -> i32 {
+pub fn offset(tz: Tz, date: NaiveDate) -> i32 {
     let noon = date.and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
     tz.from_local_datetime(&noon).earliest().map_or(0, |t| t.offset().fix().local_minus_utc() / 60)
 }

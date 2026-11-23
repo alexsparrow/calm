@@ -49,7 +49,11 @@ changes your calendar by accident.
 - **Search everything.** Titles, people (`with:sam`), calendars, places and series. Matches stay
   bright and everything else dims, in every view: at year zoom, only the matching days light up.
   A thin timeline shows every match across the calendar; click one to go there.
-- **Time zones.** Extra hour columns with flags for labels, and every event's time in each zone.
+- **Time zones, and travel.** Extra hour columns with flags for labels, and every event's time
+  in each zone. Give a journey (a flight, a train, a drive) different start and end time zones,
+  as Google Calendar allows, and calm knows where you'll be when: `W` marks each journey beside
+  its days with local times ("16:35 BST → KST +8h", "13:20 KST") and adds hour columns for the
+  zones you visit; its details read "16:35 BST → 13:20 +1 KST · +8 h"; `calm travel` lists them.
 - **Scriptable.** A command line for events and config, so agents and scripts can propose
   changes for you to review.
 
@@ -139,6 +143,11 @@ Some of what's coming has no equivalent in other calendars yet:
 - **A command palette and a vim layer.** Remappable keys for everything, the `:` line growing into
   a command line with fuzzy completion (`:view dial`, `:zoom year`), and counts and `gg`/`G`.
 
+- **Time where you'll be.** With travel known, a view can lay each day out in the zone you'll be
+  in that day, with a seam where a journey jumps the clock, and switching between home and local
+  time morphs the events. Then jet lag: your energy curve follows your body clock as it catches
+  up with the new zone, about a day per hour of difference, so a 3 pm meeting that lands in your
+  body's 3 am shows up as strain before you book the trip.
 - **Calm notifications.** Being told without being startled. Your status bar shows what's next
   ("Standup · 12m"), and each event gets one gentle heads-up, timed to what it needs and worded
   as a transition: "Wrap up — Standup in 5 min, then free until 2". All-day, tentative and focus
@@ -239,6 +248,7 @@ copy and change. Reference: [docs/config.md](docs/config.md).
 | `C` · `B` · `V` | Colour measure · by calendar · composition (each view lists its own) |
 | `G` | Day-span glyph in overview cells |
 | `Z` | Extra time zones |
+| `W` | Travel: journeys (events with different start and end zones) marked beside each day with their local times, plus hour columns for the zones you visit |
 | `D` | Light / dark (follows the system by default) |
 | `E` | Edit this view (and your energy settings) |
 | `M`, ☰ | Menu: secondary calendars and actions |

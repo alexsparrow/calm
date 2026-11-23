@@ -8,6 +8,7 @@ mod sun;
 mod sync;
 mod text;
 mod theme;
+mod travel;
 mod zones;
 mod view;
 mod viewconf;
@@ -31,6 +32,10 @@ fn main() {
     // Changes from the command line: `calm event …`, `calm outbox`, `calm commit`, `calm discard`.
     if matches!(args.first().map(String::as_str), Some("event" | "outbox" | "commit" | "discard")) {
         std::process::exit(sync::cli::run(&args));
+    }
+    // `calm travel`: the time-zone moves calm found in your events (with `travel` in calm.kdl).
+    if args.first().map(String::as_str) == Some("travel") {
+        std::process::exit(travel::cli());
     }
     // `calm google login ADDRESS`: sign in to Google Calendar in the browser.
     if args.first().map(String::as_str) == Some("google") {

@@ -761,6 +761,81 @@ impl CalmView {
     }
 
     /// Furniture for lens `li` at layer opacity `a`.
+    /// The zone rail for one day: on the ground, how far the clock is from home's (quiet at
+    /// home, warm east, cool west; nothing while travelling with `W`); on the way, a dashed
+    /// neutral band. Labels give each journey's local times where it starts and ends.
+    #[allow(clippy::too_many_arguments)]
+    fn zone_rail(
+        &self,
+        t: &crate::travel::Travel,
+        midnight: chrono::DateTime<chrono::Utc>,
+        inner: &super::arrange::Inner,
+        time_y: bool,
+        ra: f32,
+        rail_box: &dyn Fn(f32, f32, f32) -> Option<Rect>,
+        window: &Window,
+        f: &mut Frame,
+    ) {
+        let th = self.theme;
+        let day_end = midnight + chrono::Duration::days(1);
+        let u = |at: chrono::DateTime<chrono::Utc>| (at - midnight).num_seconds() as f32 / 86400.;
+        let w = RAIL_W - 4.;
+        for seg in t.segments(midnight, day_end) {
+            let (u0, u1) = (u(seg.from), u(seg.to));
+            match seg.air {
+                Some(_) => {
+                    // Dashes: one every ~20 minutes of the journey.
+                    let n = ((u1 - u0) * 72.).ceil().max(1.) as usize;
+                    for k in 0..n {
+                        let a = u0 + (u1 - u0) * k as f32 / n as f32;
+                        let b = a + (u1 - u0) / n as f32 * 0.55;
+                        if let Some(r) = rail_box(a, b, w) {
+                            f.push(BACK, Cmd::Quad { b: r, r: 0., color: with_alpha(th.muted, 0.7 * ra), border: None });
+                        }
+                    }
+                }
+                // Travelling (`W`), the ground says nothing the labels and columns don't.
+                None if self.travel_on => {}
+                None => {
+                    let h = seg.ahead;
+                    let color = if h.abs() < 0.01 {
+                        with_alpha(th.faint, 0.3 * ra)
+                    } else {
+                        gpui::hsla(if h > 0. { 25. } else { 212. } / 360., 0.7, 0.55, ra * (0.35 + 0.65 * (h.abs() / 8.).min(1.)))
+                    };
+                    if let Some(r) = rail_box(u0, u1, w) {
+                        f.push(BACK, Cmd::Quad { b: r, r: 0., color, border: None });
+                    }
+                }
+            }
+        }
+        // Labels: "16:35 BST → KST +8h" where a journey starts, "13:20 KST" where it ends.
+        let ci = inner.cell;
+        // Starts sit just before the point (clear of the event's own title), ends just after.
+        let mut put = |at: chrono::DateTime<chrono::Utc>, text: String, before: bool| {
+            let v = u(at);
+            if !(0. ..1.).contains(&v) {
+                return;
+            }
+            let (x, y) = inner.map(v, v);
+            let inside = if time_y { y >= ci[1] - 1. && y <= ci[3] + 1. } else { x >= ci[0] - 1. && x <= ci[2] + 1. };
+            if inside {
+                let pos = if time_y {
+                    (ci[0] + 4., (if before { y - 14. } else { y + 1. }).clamp(ci[1], ci[3] - 14.))
+                } else {
+                    let w = text::width(window, &text.clone().into(), &self.fonts.semibold, 10.);
+                    ((if before { x - w - 3. } else { x + 3. }).clamp(ci[0], ci[2] - w), ci[1] + 2.)
+                };
+                let line = shape(window, text.into(), &self.fonts.semibold, 10., with_alpha(th.muted, ra));
+                f.push(FRONT, Cmd::Line { line, at: pos, size: 10., clip: None });
+            }
+        };
+        for l in &t.legs {
+            put(l.depart, format!("{} {} \u{2192} {} {:+}h", l.from.local(l.depart).format("%H:%M"), l.from.label(l.depart), l.to.label(l.arrive), l.shift_hours()), true);
+            put(l.arrive, format!("{} {}", l.to.local(l.arrive).format("%H:%M"), l.to.label(l.arrive)), false);
+        }
+    }
+
     /// The editing mode's preview: where the new or moved event would go, day by day, with
     /// its time beside it.
     fn paint_ghost(&self, arr: &Arr, window: &Window, f: &mut Frame) {
@@ -876,8 +951,13 @@ impl CalmView {
         let time_y = spec.y == Axis::TimeOfDay;
         let time_x = spec.x == Axis::TimeOfDay;
         // Extra zones labelling this lens's time axis, unless its grammar narrows to primary.
-        let zones: Vec<chrono_tz::Tz> =
-            if self.zones_on && spec.zones == crate::spec::ZoneAxes::All { self.zones.extra.clone() } else { Vec::new() };
+        let zones: Vec<chrono_tz::Tz> = if li == self.preset {
+            self.shown_zones()
+        } else if self.zones_on && spec.zones == crate::spec::ZoneAxes::All {
+            self.zones.extra.clone()
+        } else {
+            Vec::new()
+        };
 
         // Cell boxes once lines separate, with alternate months gently tinted.
         let box_a = a * boxn * (1. - heat);
@@ -1037,10 +1117,21 @@ impl CalmView {
                     let date = self.data.date(d);
                     let utc = self.zones.primary_offset(date) as f32;
                     let place = self.place;
+                    let midnight = date.and_hms_opt(0, 0, 0).unwrap().and_utc() - chrono::Duration::minutes(utc as i64);
                     let value = |minute: f32| match kind {
                         crate::spec::Rail::Energy => self.data.energy_at(d, minute),
                         crate::spec::Rail::Daylight => place.map_or(0., |p| crate::sun::daylight(crate::sun::elevation(p, date, minute, utc))),
+                        crate::spec::Rail::Zone => 0.,
                     };
+                    let rail_box = |u0: f32, u1: f32, w: f32| -> Option<Rect> {
+                        let (p0, p1) = (inner.map(u0, u0), inner.map(u1, u1));
+                        let (s0, s1) = if time_y { (p0.1.max(ci[1]), p1.1.min(ci[3])) } else { (p0.0.max(ci[0]), p1.0.min(ci[2])) };
+                        (s1 > s0).then(|| if time_y { [ci[0] - RAIL_W + 1., s0, ci[0] - RAIL_W + 1. + w, s1] } else { [s0, ci[1] - RAIL_W + 1., s1, ci[1] - RAIL_W + 1. + w] })
+                    };
+                    if let (crate::spec::Rail::Zone, Some(t)) = (kind, &self.travel) {
+                        self.zone_rail(t, midnight, &inner, time_y, ra, &rail_box, window, f);
+                        continue;
+                    }
                     // Runs of near-equal energy draw as one quad: far fewer than one per step.
                     let mut k = 0;
                     while k < n {
@@ -1061,6 +1152,7 @@ impl CalmView {
                             match kind {
                                 crate::spec::Rail::Energy => color::ramp(&th, color::Measure::Demand, 0.2 + 0.8 * level),
                                 crate::spec::Rail::Daylight => color::daylight(&th, level),
+                                crate::spec::Rail::Zone => th.faint,
                             },
                             ra,
                         );
