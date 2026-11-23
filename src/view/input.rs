@@ -79,7 +79,9 @@ impl EventEmitter<InputEvent> for TextInput {}
 
 impl TextInput {
     pub fn new(content: impl Into<SharedString>, placeholder: impl Into<SharedString>, style: InputStyle, cx: &mut Context<Self>) -> Self {
-        let content = content.into();
+        // A single line: line breaks become " · " (see `crate::text::one_line`).
+        let content: SharedString = content.into();
+        let content: SharedString = if content.contains(['\n', '\r']) { crate::text::one_line(&content).into() } else { content };
         let end = content.len();
         TextInput {
             focus_handle: cx.focus_handle(),
@@ -102,7 +104,7 @@ impl TextInput {
 
     /// Replaces the text, with the cursor at the end.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = text.into();
+        self.content = crate::text::one_line(&text.into()).into();
         self.selected_range = self.content.len()..self.content.len();
         self.marked_range = None;
         cx.notify();

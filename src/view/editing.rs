@@ -127,14 +127,17 @@ impl CalmView {
         let e = &self.data.events[i];
         let now = edit::fields(&r, &e.title, e.location.as_ref().map(|l| l.as_ref()));
         let text = |input: &Entity<TextInput>| input.read(cx).text().trim().to_string();
+        // Compared as the field shows them (one line), so an untouched multi-line value isn't
+        // rewritten.
+        let shown = |s: &str| crate::text::one_line(s);
         let patch = match field {
             Field::Title => {
                 let t = text(&d.title);
-                (!t.is_empty() && t != e.title.as_ref()).then(|| json!({ "summary": t }))
+                (!t.is_empty() && t != shown(&e.title)).then(|| json!({ "summary": t }))
             }
             Field::Location => {
                 let l = text(&d.location);
-                (l != e.location.as_ref().map_or("", |s| s.as_ref())).then(|| json!({ "location": l }))
+                (l != shown(e.location.as_ref().map_or("", |s| s.as_ref()))).then(|| json!({ "location": l }))
             }
         };
         let Some(patch) = patch else { return };

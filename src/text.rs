@@ -18,6 +18,9 @@ impl Fonts {
 }
 
 pub fn shape(window: &Window, text: SharedString, font: &Font, size: f32, color: Hsla) -> ShapedLine {
+    // One line only: event text can hold line breaks (a location over two lines), which the
+    // shaper refuses.
+    let text = if text.contains(['\n', '\r']) { one_line(&text).into() } else { text };
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -27,6 +30,11 @@ pub fn shape(window: &Window, text: SharedString, font: &Font, size: f32, color:
         strikethrough: None,
     };
     window.text_system().shape_line(text, px(size), &[run], None)
+}
+
+/// Line breaks (and the space around them) as " · ".
+pub fn one_line(text: &str) -> String {
+    text.split(['\n', '\r']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" \u{00b7} ")
 }
 
 pub fn width(window: &Window, text: &SharedString, font: &Font, size: f32) -> f32 {
@@ -88,4 +96,13 @@ fn fit_uncached(window: &Window, text: &SharedString, font: &Font, size: f32, ma
 
 pub fn line_height(size: f32) -> Pixels {
     px((size * 1.3).round())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn one_line() {
+        assert_eq!(super::one_line("Heathrow Airport\nHounslow, TW6 2GA\r\n"), "Heathrow Airport \u{00b7} Hounslow, TW6 2GA");
+        assert_eq!(super::one_line("plain"), "plain");
+    }
 }
