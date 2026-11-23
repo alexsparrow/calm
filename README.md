@@ -139,6 +139,11 @@ Some of what's coming has no equivalent in other calendars yet:
 - **A command palette and a vim layer.** Remappable keys for everything, the `:` line growing into
   a command line with fuzzy completion (`:view dial`, `:zoom year`), and counts and `gg`/`G`.
 
+- **Calm notifications.** Being told without being startled. Your status bar shows what's next
+  ("Standup · 12m"), and each event gets one gentle heads-up, timed to what it needs and worded
+  as a transition: "Wrap up — Standup in 5 min, then free until 2". All-day, tentative and focus
+  events stay silent.
+
 Closer to hand:
 
 - Editing a recurring event: "this event, or all events?" when you move one occurrence, and later

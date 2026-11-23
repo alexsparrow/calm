@@ -20,10 +20,26 @@ Next, roughly in order:
 1. **Editing, the rest:** the "this event / all events" popover for recurring events, the
    "notify guests?" prompt, picking events from the keyboard, undo of sent changes from the
    history, then "this and following", replies to invitations, and all-day ↔ timed.
-2. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
+2. **Calm notifications:** being told about events without being startled by them. calm
+   decides when and what to say, and the desktop's notification daemon (Noctalia here)
+   delivers it and applies its Do Not Disturb.
+   - **Ambient first:** `calm next --json` (the next event, minutes to go, what follows, whether
+     you're in a focus block) for status bars. A Noctalia scripted (Lua) widget in the repo shows
+     "Standup · 12m", getting a little stronger as it nears. The top bar's clock shows the same.
+   - **`calm agent`:** a user service that keeps the cache synced while the window is closed and
+     sends reminders. Later it can also say when changes are waiting for review.
+   - **One heads-up per event,** timed to what it needs: travel time for a place, about 2 min for
+     a video call, earlier for a demanding meeting in an energy dip. Worded as a transition
+     ("Wrap up — Standup in 5 min, then free until 2"). No repeats, no badges.
+   - **Silence by default** for all-day, tentative and declined events, free/busy calendars and
+     your own focus blocks; quiet hours and per-calendar settings in calm.kdl.
+   - **Later:** a morning summary in place of a stream of pings; holding everything but the
+     block's end during focus; notification rules once the rules engine exists.
+   - Turn off Noctalia's own calendar reminders, or you'll be told twice.
+3. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
    layer (`hjkl` is already in, then counts and `gg`/`G`); the `:` line (date jumps, below) grows
    into a command line with fuzzy completion (`:view dial`, `:zoom year`, `:new 9-10 Focus`).
-3. **Search and filters:** filters over any event field (title, people, series, location,
+4. **Search and filters:** filters over any event field (title, people, series, location,
    status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
    They're toggled from the top bar, with calendar visibility as one built-in filter, and views
    can declare their own. The drawer gets "only this series" and "only with this person". A
@@ -31,14 +47,14 @@ Next, roughly in order:
    search's query language (`with:` `in:` `at:` `series:` `is:`) is the start of the filter one.
    Search (`/`) and date jumps (`:`) are done (see the README); saving a search as a filter
    comes with this.
-4. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
+5. **Rules engine:** declarative rules (conditions on title, attendees, calendar, time, tags →
    set, tag or adjust derived properties) whose outputs the grammar can use as channels. Ordered,
    explainable (the drawer shows which rules fired). Small expression language before any embedded
    scripting.
-5. **CalDAV** (iCloud, Fastmail) behind the same outbox.
-6. **View presets:** a library of views to share, and an editor where the plain-language
+6. **CalDAV** (iCloud, Fastmail) behind the same outbox.
+7. **View presets:** a library of views to share, and an editor where the plain-language
    grammar description is directly editable.
-7. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
+8. **macOS packaging:** `.app` and DMG; verify the rotated-glyph shader path on Metal. A
    home-manager module for calm's config.
 
 ## Ideas
