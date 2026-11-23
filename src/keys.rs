@@ -174,6 +174,8 @@ pub enum Command {
     View(usize),
     /// `view next` / `view prev`.
     ViewStep(i32),
+    /// `view lanes`: by name (the start of it will do).
+    ViewNamed(String),
     Search,
     /// Label the events in view, and select one by typing its label.
     Pick,
@@ -327,7 +329,8 @@ impl Command {
                 w => match (sign(w, &["prev", "previous"], &["next"]), w.parse::<usize>()) {
                     (Some(d), _) => Command::ViewStep(d),
                     (_, Ok(n)) if n >= 1 => Command::View(n - 1),
-                    _ => return Err("`view` takes a number (1 is the first), next or prev".into()),
+                    (_, Ok(_)) => return Err("`view` takes a number (1 is the first), a name, next or prev".into()),
+                    _ => Command::ViewNamed(w.to_string()),
                 },
             },
             "match" => Command::Match(sign(one("next or prev")?, &["prev", "previous"], &["next"]).ok_or("`match` takes next or prev")?),
@@ -373,6 +376,7 @@ impl Command {
             Command::Zoom(_) => d(Around, "zoom", "Zoom (day \u{2026} year)"),
             Command::View(_) => d(Around, "view", "Switch view"),
             Command::ViewStep(_) => d(Around, "view-step", "Next / previous view"),
+            Command::ViewNamed(_) => d(Around, "view", "Switch view"),
             Command::FullDay => d(Around, "full-day", "Full day / default hours"),
             Command::Today => d(Around, "today", "Today"),
             Command::Search => d(Finding, "search", "Search (with: in: at: series: is:)"),
@@ -419,6 +423,7 @@ impl fmt::Display for Command {
             Command::Zoom(n) => format!("zoom {}", word(*n, "in", "out")),
             Command::View(i) => format!("view {}", i + 1),
             Command::ViewStep(n) => format!("view {}", word(*n, "prev", "next")),
+            Command::ViewNamed(name) => format!("view {name}"),
             Command::Match(n) => format!("match {}", word(*n, "prev", "next")),
             Command::Snap(n) => format!("snap {}", word(*n, "finer", "coarser")),
             Command::Step(x) => format!("step {}", d(x)),
@@ -692,6 +697,8 @@ mod tests {
     fn commands() {
         assert_eq!(Command::parse("pan -1"), Ok(Command::Pan(-1)));
         assert_eq!(Command::parse("view 3"), Ok(Command::View(2)));
+        assert_eq!(Command::parse("view lanes"), Ok(Command::ViewNamed("lanes".into())));
+        assert!(Command::parse("view 0").is_err());
         assert_eq!(Command::parse("view prev"), Ok(Command::ViewStep(-1)));
         assert_eq!(Command::parse("toggle span"), Ok(Command::Cycle("span".into())));
         assert_eq!(Command::parse("toggle rail=travel zones=visible"), Ok(Command::Toggle(vec![("rail".into(), "travel".into()), ("zones".into(), "visible".into())])));

@@ -92,6 +92,14 @@ impl CalmView {
                 }
                 self.set_preset(*i);
             }
+            Command::ViewNamed(name) => {
+                let name = name.to_lowercase();
+                let Some(i) = self.views.iter().position(|v| v.name.to_lowercase() == name).or_else(|| self.views.iter().position(|v| v.name.to_lowercase().starts_with(&name))) else {
+                    self.toast(format!("No view called \u{201c}{name}\u{201d}"), None, cx);
+                    return false;
+                };
+                self.set_preset(i);
+            }
             Command::ViewStep(d) => {
                 let n = self.views.len() as i32;
                 self.set_preset((self.preset as i32 + d).rem_euclid(n) as usize);

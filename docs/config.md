@@ -219,7 +219,7 @@ params) lets the key through to the global one.
 | `scroll -1`, `scroll 1` | Scroll the hours, in views with hours; else pan |
 | `zoom in`, `zoom out` | Towards a day / a year |
 | `today`, `full-day` | Go to today · full day / default hours |
-| `view 3`, `view next`, `view prev` | Switch view (by position, as the switcher orders them) |
+| `view 3`, `view lanes`, `view next`, `view prev` | Switch view: by position (as the switcher orders them) or by name |
 | `search`, `prompt` | Open `/` search · the `:` prompt |
 | `pick` | Label the events in view with letters; type one's letters to select it (Backspace takes one back, Esc gives up) |
 | `match next`, `match prev` | Step through search matches (selecting them; in the field, just moving) |

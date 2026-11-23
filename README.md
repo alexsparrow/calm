@@ -28,8 +28,9 @@ changes your calendar by accident.
 - **Native and GPU-drawn.** Built in Rust on [gpui](https://www.gpui.rs), Zed's UI framework.
   Every change of view or zoom is a spring animation, and nothing is drawn once everything settles.
 - **Keyboard first, vim-flavoured.** `/` searches as you type and `n` / `N` step through the
-  matches; `:31` goes to the 31st; `hjkl` move. You can schedule an event without touching the
-  mouse and nudge the selected one by a step or a day. `?` lists every key.
+  matches; `:31` goes to the 31st; `hjkl` move. `P` puts a few letters on every event in view, as
+  link hints do in Vimium: type them to pick one. You can schedule an event, or pick one and move
+  it, without touching the mouse. `?` lists every key.
 
 ## Powerful
 
@@ -51,9 +52,13 @@ changes your calendar by accident.
   A thin timeline shows every match across the calendar; click one to go there.
 - **Time zones, and travel.** Extra hour columns with flags for labels, and every event's time
   in each zone. Give a journey (a flight, a train, a drive) different start and end time zones,
-  as Google Calendar allows, and calm knows where you'll be when: `W` marks each journey beside
-  its days with local times ("16:35 BST → KST +8h", "13:20 KST") and adds hour columns for the
+  as Google Calendar allows, and calm knows where you'll be when: `W` (the Travel overlay) marks
+  each journey beside its days with local times ("16:35 BST → KST +8h", "13:20 KST") and adds hour columns for the
   zones you visit; its details read "16:35 BST → 13:20 +1 KST · +8 h"; `calm travel` lists them.
+- **Make it yours.** Every key runs a command (`pan -1`, `cycle measure`, `toggle rail=daylight`)
+  that you can rebind, per mode or per view, and run from `:` with completion. *Overlays* are
+  named sets of settings that go on and off over whichever view you're in: Travel (`W`) is one,
+  and you can write your own. While one's on, a pill in the top bar says so.
 - **Scriptable.** A command line for events and config, so agents and scripts can propose
   changes for you to review.
 
@@ -94,6 +99,47 @@ everything else. That works in every view, so at year zoom the matching days lig
   you press Enter.
 
 `?` shows every key, grouped, along with the ones the current view adds.
+
+## Keyboard
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/pick.png" alt="Picking by letters: every event in view labelled with one or two letters"></td>
+<td width="50%"><img src="docs/images/command.png" alt="The : prompt completing t: today, theme, toggle and more, each with what it does"></td>
+</tr>
+<tr>
+<td><code>P</code>: every event gets a label. Type <code>SJ</code> and Research is selected.</td>
+<td><code>:t</code>: still today if you press Enter, or Tab takes a command.</td>
+</tr>
+</table>
+
+- **Pick an event by its letters.** `P` labels every event in view with home-row letters, as
+  short as they can be. Typing narrows them down until one is left, and that event is
+  selected. Backspace takes a letter back, Esc gives up. In Adjust, the arrows then move what
+  you picked.
+- **Every key is a command.** The built-in keys are a KDL file, and yours go on top:
+
+  ```kdl
+  keys { bind "t" "today"; bind "g" "toggle rail=daylight"; unbind "d" }
+  keys "create" { bind "+" "snap finer" }
+  view "Dial" { keys { bind "j" "set rail=energy" } }
+  ```
+
+  A view's own keys come first, so a view can take a key over. `calm config check` catches typos
+  ("did you mean `today`?"), and `?` always shows the keys as they are.
+- **`:` runs commands too.** Dates come first (`:31`); otherwise it's a command, completed as you
+  type: names, views (`:view lanes`), overlays, and settings with their values
+  (`:set rail=` lists the rails). ↑ ↓ choose, Tab takes one.
+- **Overlays.** A named set of settings, turned on and off over any view:
+
+  ```kdl
+  overlay "Travel" key="w" { rail "travel"; zones "visible" }
+  ```
+
+  A pill in the top bar shows each one that's on (click it to turn it off), and the ☰ menu lists
+  them all.
+
+All of it: [Keys](docs/config.md#keys) and [Overlays](docs/config.md#overlays).
 
 ## Editing
 
