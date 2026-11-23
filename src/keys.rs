@@ -540,6 +540,106 @@ pub fn rows<'a>(bindings: impl IntoIterator<Item = &'a Binding>, group: impl Fn(
         .collect()
 }
 
+/// What `:` completion can offer: the views (in order), settings by name with their values
+/// (the current view's params, then session channels), and the overlays.
+pub struct Vocab<'a> {
+    pub views: Vec<&'a str>,
+    pub settings: Vec<(&'a str, Vec<&'a str>)>,
+    pub overlays: Vec<&'a str>,
+}
+
+/// What each command's first word is for, in completions.
+const HEADS: &[(&str, &str)] = &[
+    ("pan", "Back or forward a page"),
+    ("scroll", "Scroll the hours"),
+    ("zoom", "Zoom in or out"),
+    ("view", "Switch view"),
+    ("match", "Next or previous search match"),
+    ("step", "In a mode: move"),
+    ("stretch", "Adjust: resize"),
+    ("snap", "In a mode: snap step"),
+    ("cycle", "Step through a setting's options"),
+    ("set", "Set settings: name=value"),
+    ("toggle", "Set settings, or put them back"),
+    ("overlay", "Turn an overlay on or off"),
+];
+
+/// How well `typed` fits `word`: a prefix, then a part, then letters in order. Lower is
+/// better.
+fn fit(word: &str, typed: &str) -> Option<u8> {
+    let (w, t) = (word.to_lowercase(), typed.to_lowercase());
+    if w.starts_with(&t) {
+        Some(0)
+    } else if w.contains(&t) {
+        Some(1)
+    } else {
+        let mut letters = w.chars();
+        t.chars().all(|c| letters.any(|l| l == c)).then_some(2)
+    }
+}
+
+/// Completions for the `:` prompt: (the text it would become, what it is). Best first.
+pub fn complete(text: &str, v: &Vocab) -> Vec<(String, String)> {
+    let cut = text.rfind(' ').map_or(0, |k| k + 1);
+    let (head, last) = (&text[..cut], &text[cut..]);
+    let words: Vec<&str> = head.split_whitespace().collect();
+    // (word, what it is, whether more follows it).
+    let mut options: Vec<(String, String, bool)> = Vec::new();
+    let plain = |o: &mut Vec<(String, String, bool)>, ws: &[&str]| o.extend(ws.iter().map(|w| (w.to_string(), String::new(), false)));
+    match words.first().copied() {
+        None => {
+            for name in NAMES {
+                let (what, more) = match HEADS.iter().find(|(n, _)| n == name) {
+                    Some((_, what)) => (what.to_string(), true),
+                    None => (Command::parse(name).map(|c| c.describe().text).unwrap_or_default(), false),
+                };
+                // Not what you'd type at `:` (or there already).
+                if !matches!(*name, "stress" | "prompt" | "complete") {
+                    options.push((name.to_string(), what, more));
+                }
+            }
+        }
+        Some(_) if words.len() > 1 && !matches!(words[0], "set" | "toggle") => {}
+        Some("pan" | "scroll") => plain(&mut options, &["-1", "1"]),
+        Some("zoom") => plain(&mut options, &["in", "out"]),
+        Some("match") => plain(&mut options, &["next", "prev"]),
+        Some("snap") => plain(&mut options, &["finer", "coarser"]),
+        Some("step" | "stretch") => plain(&mut options, &["left", "right", "up", "down"]),
+        Some("view") => {
+            options.extend(v.views.iter().enumerate().map(|(i, n)| ((i + 1).to_string(), n.to_string(), false)));
+            plain(&mut options, &["next", "prev"]);
+        }
+        Some("overlay") => options.extend(v.overlays.iter().map(|n| (n.to_string(), String::new(), false))),
+        Some("cycle") => options.extend(v.settings.iter().map(|(n, vals)| (n.to_string(), vals.join(", "), false))),
+        Some("set" | "toggle") => match last.split_once('=') {
+            Some((name, _)) => {
+                if let Some((_, vals)) = v.settings.iter().find(|(n, _)| *n == name) {
+                    options.extend(vals.iter().map(|val| (format!("{name}={val}"), String::new(), false)));
+                }
+            }
+            None => options.extend(v.settings.iter().filter(|(n, _)| !words.iter().any(|w| w.starts_with(&format!("{n}=")))).map(|(n, vals)| (format!("{n}="), vals.join(", "), true))),
+        },
+        Some(_) => {}
+    }
+    // Values after `name=` match on the value; the rest on the whole word.
+    let typed = last.split_once('=').map_or(last, |(_, val)| val);
+    let mut scored: Vec<(u8, usize, String, String)> = options
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (word, what, more))| {
+            let target = if last.contains('=') { word.split_once('=').map_or(word.as_str(), |(_, val)| val) } else { word.as_str() };
+            // Views by number or by name.
+            let by_name = || (words.first() == Some(&"view")).then(|| fit(&what, typed)).flatten();
+            let score = if typed.is_empty() { 0 } else { fit(target, typed).or_else(by_name)? };
+            let space = if more && !word.ends_with('=') { " " } else { "" };
+            let label = if what.is_empty() { word.clone() } else { format!("{word}  \u{b7}  {what}") };
+            Some((score, i, format!("{head}{word}{space}"), label))
+        })
+        .collect();
+    scored.sort_by_key(|(score, i, _, _)| (*score, *i));
+    scored.into_iter().take(8).map(|(_, _, text, label)| (text, label)).collect()
+}
+
 /// Keys side by side; three or more with the same modifiers say them once
 /// (`Shift+← → ↑ ↓`).
 fn joined(keys: Vec<String>) -> String {
@@ -597,6 +697,21 @@ mod tests {
         for text in ["pan -1", "zoom in", "view 3", "view prev", "step left", "toggle rail=travel zones=visible", "cycle measure", "free-only"] {
             assert_eq!(Command::parse(text).unwrap().to_string(), text);
         }
+    }
+
+    #[test]
+    fn completion() {
+        let v = Vocab { views: vec!["Grid", "Lanes", "Dial"], settings: vec![("measure", vec!["calendar", "demand"]), ("rail", vec!["off", "travel"])], overlays: vec!["Travel"] };
+        let first = |t: &str| complete(t, &v).first().map(|(text, _)| text.clone());
+        assert_eq!(first("ov").as_deref(), Some("overlay "));
+        assert_eq!(first("tdy").as_deref(), Some("today"));
+        assert_eq!(first("overlay t").as_deref(), Some("overlay Travel"));
+        assert_eq!(first("view l").as_deref(), Some("view 2"));
+        assert_eq!(first("set ra").as_deref(), Some("set rail="));
+        assert_eq!(first("set rail=t").as_deref(), Some("set rail=travel"));
+        assert_eq!(first("toggle rail=travel me").as_deref(), Some("toggle rail=travel measure="));
+        assert!(complete("today x", &v).is_empty());
+        assert!(complete("zz", &v).is_empty());
     }
 
     #[test]

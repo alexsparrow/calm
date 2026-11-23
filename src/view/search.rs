@@ -38,6 +38,8 @@ pub(super) struct Prompt {
     list: ScrollHandle,
     /// The match the list was last scrolled to.
     scrolled: std::cell::Cell<Option<usize>>,
+    /// The highlighted completion, in `:`.
+    pick: usize,
     _subs: Vec<Subscription>,
 }
 
@@ -194,7 +196,7 @@ impl CalmView {
         let style = InputStyle { text: th.ink, placeholder: th.faint, cursor: th.now, selection: with_alpha(th.now, 0.25), size: 15. };
         let (text, placeholder) = match kind {
             Kind::Search => (self.found.as_ref().map(|f| f.query.clone()).unwrap_or_default(), "Search titles, or with: in: at: series: is:"),
-            Kind::Jump => (String::new(), "31 · 12-31 · 2027-03-04 · dec · mon · +2w · today"),
+            Kind::Jump => (String::new(), "A date (31, 12-31, dec, +2w) or a command (Tab completes)"),
         };
         let seeded = self.prompt_seed.take();
         let input = cx.new(|cx| {
@@ -225,7 +227,7 @@ impl CalmView {
             let l = &self.lenses[self.preset];
             self.found = Some(Found { query: String::new(), matches: Vec::new(), hits: Vec::new(), current: 0, before: (l.start.target, l.zoom.target, [l.hours[0].target, l.hours[1].target]) });
         }
-        self.prompt = Some(Prompt { kind, input, list: ScrollHandle::new(), scrolled: Default::default(), _subs: subs });
+        self.prompt = Some(Prompt { kind, input, list: ScrollHandle::new(), scrolled: Default::default(), pick: 0, _subs: subs });
     }
 
     fn prompt_text(&self, cx: &gpui::App) -> Option<String> {
@@ -240,6 +242,38 @@ impl CalmView {
     /// The query changed: search again and jump to the first match from where you are.
     fn prompt_changed(&mut self) {
         self.prompt_query_dirty = true;
+        if let Some(p) = &mut self.prompt {
+            p.pick = 0;
+        }
+    }
+
+    /// Completions for the `:` field, once it starts with a letter. (A date can too: `t` is
+    /// today and Enter still goes there; Tab takes the completion.)
+    fn completions(&self, text: &str) -> Vec<(String, String)> {
+        if !text.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            return Vec::new();
+        }
+        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
+        let mut settings: Vec<(&str, Vec<&str>)> = spec
+            .params
+            .iter()
+            .filter(|p| spec.active(p, values, mark))
+            .map(|p| match p.bind {
+                crate::spec::Bind::Toggle => (p.name.as_str(), vec!["true", "false"]),
+                crate::spec::Bind::Segmented => (p.name.as_str(), spec.options(p, values, mark).map(|o| o.value.as_str()).collect()),
+            })
+            .collect();
+        for (name, vals) in crate::spec::CHANNELS {
+            if spec.param(name).is_none() {
+                settings.push((name, vals.to_vec()));
+            }
+        }
+        let vocab = crate::keys::Vocab {
+            views: self.views.iter().map(|v| v.name.as_str()).collect(),
+            settings,
+            overlays: self.conf.overlays.iter().map(|o| o.name.as_str()).collect(),
+        };
+        crate::keys::complete(text, &vocab)
     }
 
     /// Re-runs the search after typing (from render, which has the app to read the field).
@@ -343,6 +377,23 @@ impl CalmView {
     /// A command in the search field (see `keys "search"` in `assets/keys.kdl`): through
     /// the matches, or completing a facet. True if taken.
     pub(super) fn prompt_command(&mut self, cmd: &Command, cx: &mut Context<Self>) -> bool {
+        // In `:`, the keys move through completions and take one.
+        if self.prompt.as_ref().is_some_and(|p| p.kind == Kind::Jump) {
+            let Some(text) = self.prompt_text(cx) else { return false };
+            let options = self.completions(&text);
+            let p = self.prompt.as_mut().unwrap();
+            match cmd {
+                Command::Match(d) if !options.is_empty() => p.pick = (p.pick as i32 + d).rem_euclid(options.len() as i32) as usize,
+                Command::Complete => {
+                    if let Some((completed, _)) = options.get(p.pick).cloned() {
+                        let input = p.input.clone();
+                        input.update(cx, |t, cx| t.set_text(completed, cx));
+                    }
+                }
+                _ => return false,
+            }
+            return true;
+        }
         match cmd {
             Command::Match(d) => self.step_match(*d),
             Command::Complete => {
@@ -494,6 +545,7 @@ impl CalmView {
                     (Some(d), _) => format!("\u{2192} {}", d.format("%a %-d %b %Y")),
                     _ if text.trim().is_empty() => "\u{2192} today".into(),
                     (None, Ok(cmd)) => format!("\u{21b5} {}", cmd.describe().text),
+                    (None, Err(_)) if !self.completions(&text).is_empty() => "Tab completes".into(),
                     (None, Err(e)) => e,
                 },
             ),
@@ -521,6 +573,26 @@ impl CalmView {
                     .child(div().flex_1().min_w_0().child(p.input.clone()))
                     .child(div().flex_none().text_size(px(12.5)).text_color(th.faint).child(info)),
             );
+        if p.kind == Kind::Jump {
+            let options = self.completions(&text);
+            if !options.is_empty() {
+                let row = |id: (&'static str, usize)| div().id(id).h(px(32.)).px(px(14.)).flex().items_center().gap(px(10.)).text_size(px(13.)).cursor_pointer();
+                panel = panel.child(div().h(px(1.)).bg(th.border)).children(options.into_iter().enumerate().map(|(k, (completed, label))| {
+                    let input = p.input.clone();
+                    let on = k == p.pick;
+                    row(("complete", k))
+                        .text_color(if on { th.ink } else { th.muted })
+                        .when(on, |d| d.bg(with_alpha(th.now, 0.12)))
+                        .hover(move |s| s.bg(with_alpha(th.ink, 0.05)))
+                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
+                        .when(on, |d| d.child(div().text_size(px(11.)).text_color(th.faint).child("Tab")))
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            input.update(cx, |t, cx| t.set_text(completed.clone(), cx));
+                            input.read(cx).focus(window);
+                        }))
+                }));
+            }
+        }
         if p.kind == Kind::Search {
             let row = |id: (&'static str, usize)| div().id(id).h(px(32.)).px(px(14.)).flex().items_center().gap(px(10.)).text_size(px(13.)).cursor_pointer();
             let suggestions = if text.trim().is_empty() {

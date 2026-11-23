@@ -175,7 +175,8 @@ Rules worth knowing:
 Every key does a **command**, written as text. The built-in keys are
 [`assets/keys.kdl`](../assets/keys.kdl); yours go on top, chord by chord, and `calm config dump`
 shows the result. The same commands run from the `:` prompt (`:set rail=daylight`), which
-still takes dates first (`:31` goes to the 31st), and `?` lists whatever the keys are now.
+still takes dates first (`:31` goes to the 31st) and completes commands, views, overlays and
+settings as you type (↑ ↓ to choose, Tab to take one). `?` lists whatever the keys are now.
 
 ```kdl
 keys {
