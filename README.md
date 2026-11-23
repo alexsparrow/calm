@@ -27,8 +27,9 @@ changes your calendar by accident.
   calm opens straight away and works on a plane. iCal feeds and files work too.
 - **Native and GPU-drawn.** Built in Rust on [gpui](https://www.gpui.rs), Zed's UI framework.
   Every change of view or zoom is a spring animation, and nothing is drawn once everything settles.
-- **Keyboard friendly.** Views, zoom, navigation and panels all have keys. You can create an event
-  without touching the mouse, and nudge the selected one by a step or a day.
+- **Keyboard first, vim-flavoured.** `/` searches as you type and `n` / `N` step through the
+  matches; `:31` goes to the 31st; `hjkl` move. You can schedule an event without touching the
+  mouse and nudge the selected one by a step or a day. `?` lists every key.
 
 ## Powerful
 
@@ -45,6 +46,9 @@ changes your calendar by accident.
 - **Your energy.** A sleep and circadian model (Åkerstedt & Folkard's three-process model), or a
   curve you draw. Demanding meetings drain it, and calm marks events that ask more than you'll
   have. It can run as a rail beside each day, alongside daylight.
+- **Search everything.** Titles, people (`with:sam`), calendars, places and series. Matches stay
+  bright and everything else dims, in every view: at year zoom, only the matching days light up.
+  A thin timeline shows every match across the calendar; click one to go there.
 - **Time zones.** Extra hour columns with flags for labels, and every event's time in each zone.
 - **Scriptable.** A command line for events and config, so agents and scripts can propose
   changes for you to review.
@@ -55,13 +59,43 @@ changes your calendar by accident.
   window if you like.
 - **No accidental edits.** Clicks and drags only ever select. To change things you enter a mode,
   and every change goes through an outbox you can review before it's sent, with Undo.
+- **Clashes at a glance.** An event's details list what it overlaps: other meetings in red, and
+  the all-day events it falls on (a trip, a holiday) in orange, since those aren't double
+  bookings.
 - **Live config.** One file, applied as you save it, with clear errors when something's wrong.
+
+## Search and jump
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/search.png" alt="Searching with:priya: matches bright, the rest dimmed, a list of matches and a timeline of every match"></td>
+<td width="50%"><img src="docs/images/search-year.png" alt="Searching retro at year zoom: only the Fridays with a retro light up"></td>
+</tr>
+<tr>
+<td><code>/with:priya</code>: every event with Priya, the rest dimmed.</td>
+<td>The same search at year zoom: <code>/retro</code> lights up the Fridays.</td>
+</tr>
+</table>
+
+Press `/` and start typing, as in vim. calm jumps to the next match as you type and dims
+everything else. That works in every view, so at year zoom the matching days light up.
+
+- **Search more than titles:** `with:sam`, `in:work`, `at:studio`, `series:standup`,
+  `is:tentative`. As you type `with:`, calm offers the people in your calendar, and Tab completes.
+- **Move between matches:** the list under the field follows you (↑ ↓), and a thin timeline shows
+  every match across the whole calendar; click it to go there. `Enter` lands on the match, then
+  `n` and `N` step through the rest. `Esc` puts the view back where it was.
+- **Go to a date with `:`**, read from the month you're looking at: `:31`, `:12-31`,
+  `:2027-03-04`, `:dec 24`, `:mon`, `:+2w`, `:today`. The field shows where it'll land before
+  you press Enter.
+
+`?` shows every key, grouped, along with the ones the current view adds.
 
 ## Editing
 
 ![New mode: placing an event across Writing and Lunch, flagged in amber](docs/images/new-event.png)
 
-- **New (`N` or +):** click where an event starts, then where it ends.
+- **New (`S` for schedule, or +):** click where an event starts, then where it ends.
 - **Adjust (`A` or ↕):** drag an event to move it, or drag its ends to resize it.
 
 Both modes snap to a step you pick (5 minutes to an hour). With **Free time only** on, they stay
@@ -95,12 +129,6 @@ Some of what's coming has no equivalent in other calendars yet:
   calendar chips (which become one built-in filter among many), and views can bring filters of
   their own. From an event's details you'll be able to say "only this series" or "only events
   with Sam". Non-matching events can hide or just dim, and they morph out like everything else.
-- **Search and jump, vim-style.** Press `/` and start typing a title. calm jumps to the best match
-  as you type, and the rest of the calendar dims. A list of matches opens beside it, and `n` and
-  `N` step through them across all dates, not just what's on screen. Prefixes search other facets:
-  `with:sam`, `in:work`, `at:studio`, `series:`. A search is a filter you haven't saved yet.
-- **Jump to a date.** `:` jumps: `:31` to the 31st of the month you're looking at, `:12-31` to
-  New Year's Eve, `:2027-03-04` to an exact day, `:mon` to the coming Monday, `:+2w` two weeks on.
 - **Overrun risk.** Some meetings always run long. Rules will estimate the risk from what's known:
   many guests, a series that habitually overruns, words like "workshop", no gap before the next
   thing. calm then draws a faint tail past the event's end, flags where the tail would run into the
@@ -194,6 +222,9 @@ copy and change. Reference: [docs/config.md](docs/config.md).
 | Alt+scroll | Zoom the hour window |
 | `F`, click the hour labels | Default hours ↔ the full 24 |
 | `T` | Today |
+| `/` | Search: type a title, or `with:` `in:` `at:` `series:` `is:`; ↑ ↓ through matches, Tab completes, Enter goes there, Esc goes back |
+| `n` `N` | Next / previous match, after a search |
+| `:` | Jump to a date: `:31`, `:12-31`, `:2027-03-04`, `:dec 24`, `:mon`, `:+2w`, `:today` |
 | Click | An event's details · zoom into an overview cell |
 
 **Looking**
@@ -211,7 +242,7 @@ copy and change. Reference: [docs/config.md](docs/config.md).
 
 | | |
 |---|---|
-| `N`, + | New event: click its start, then its end |
+| `S`, + | Schedule (new event): click its start, then its end |
 | `A`, ↕ | Adjust: drag to move, drag the ends to resize |
 | In a mode | `[` `]` snap step · `F` free time only · arrows/`hjkl` move · `Shift` resizes · `Enter` places · `Esc` steps back |
 | Click an event | Edit its title, date, times and location in the drawer |
@@ -255,7 +286,7 @@ Changes from the command line appear in the app at once, dimmed until they're co
 |---|---|
 | `--lens N`, `--zoom STOP`, `--theme dark\|light`, `--offset DAYS`, `--zones A,B` | Start state |
 | `--color MEASURE[:scale\|:calendar\|:COMPOSE]`, `--span` | Start colouring, day-span glyph |
-| `--edit`, `--menu`, `--changes`, `--controls`, `--picker N`, `--mode new\|adjust` | Open a panel or mode |
+| `--edit`, `--menu`, `--changes`, `--controls`, `--help-card`, `--picker N`, `--mode new\|adjust`, `--search Q`, `--jump D` | Open a panel, mode or prompt |
 | `--translucent`, `--opacity X`, `--blur` | Translucent window |
 | `--still` | Springs settle in one frame (screenshots) |
 | `--hover x,y`, `--select x,y` | Scripted pointer once the window settles; in a mode, the press and the pointer |
