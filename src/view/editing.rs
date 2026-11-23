@@ -58,7 +58,7 @@ pub(super) enum Undo {
 
 impl CalmView {
     /// The event the drawer shows, if you may edit it.
-    fn editable_shown(&self) -> Option<(usize, Arc<EditRef>)> {
+    pub(super) fn editable_shown(&self) -> Option<(usize, Arc<EditRef>)> {
         let i = self.shown?;
         let r = self.data.events.get(i)?.edit.clone()?;
         r.editable.then_some((i, r))

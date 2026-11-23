@@ -3,13 +3,13 @@
 
 use std::time::Duration;
 
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate, Timelike};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, FontWeight, Hsla, SharedString, Stateful, Div, div, ease_out_quint,
     prelude::*, px,
 };
 
-use super::scene::{DAY_NAMES, fmt_range};
+use super::scene::{DAY_NAMES, fmt_range, fmt_time};
 use super::{CalmView, Stats};
 use crate::color::{self, Measure};
 use crate::model::Status;
@@ -589,8 +589,9 @@ impl CalmView {
         let e = &self.data.events[i];
         let c = th.cals[e.calendar];
         let date = self.data.date(e.day);
+        let span = self.multi_day(e);
         // The event's time in each extra zone, flagging a different day.
-        let zone_rows: Vec<_> = if self.zones_on { self.zones.extra.clone() } else { Vec::new() }
+        let zone_rows: Vec<_> = if self.zones_on && e.all_day.is_none() { self.zones.extra.clone() } else { Vec::new() }
             .into_iter()
             .map(|tz| {
                 let start = e.start_min + self.zones.delta(tz, date) as f32;
@@ -604,8 +605,8 @@ impl CalmView {
                 div().text_size(px(12.)).text_color(th.faint).child(text)
             })
             .collect();
-        // Timed clashes first (red), then the all-day events it falls on (orange): a hotel stay or
-        // a holiday is worth knowing about, but it isn't a double booking.
+        // Double bookings first (red), then overlaps involving an all-day event, on either side
+        // (orange): a hotel stay or a holiday is worth knowing about, but it isn't a clash.
         let mut seen = std::collections::HashSet::new();
         let mut overlaps: Vec<(SharedString, bool)> = self
             .data
@@ -615,10 +616,10 @@ impl CalmView {
             .filter(|(j, o)| *j != i && o.group != e.group && !self.hidden[o.calendar] && o.overlaps(e) && seen.insert(o.group))
             .map(|(_, o)| match o.all_day {
                 Some(_) => (format!("{} · all day", o.title).into(), true),
-                None => (format!("{} · {}", o.title, fmt_range(o.start_min, o.end_min())).into(), false),
+                None => (format!("{} · {}", o.title, fmt_range(o.start_min, o.end_min())).into(), e.all_day.is_some()),
             })
             .collect();
-        overlaps.sort_by_key(|(_, all_day)| *all_day);
+        overlaps.sort_by_key(|(_, soft)| *soft);
         let section = |label: &'static str| {
             div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(label.to_uppercase())
         };
@@ -700,12 +701,18 @@ impl CalmView {
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(date.format("%A %-d %B").to_string()))
-                        .child(match self.time_row(cx) {
+                        .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(match &span {
+                            Some((heading, _)) => heading.clone(),
+                            None => date.format("%A %-d %B").to_string(),
+                        }))
+                        .child(match (self.time_row(cx), &span) {
                             // Editable: date and times open pickers.
-                            Some(pickers) => pickers,
-                            None => row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }),
+                            (Some(pickers), _) => pickers,
+                            (None, Some((_, line))) => row(line.clone().into()),
+                            (None, None) => row(if e.all_day.is_some() { self.all_day_span(e).into() } else { format!("{} · {} min", fmt_range(e.start_min, e.end_min()), e.dur_min as i32).into() }),
                         })
+                        // The pickers show where it starts; say where it ends.
+                        .when(self.editable_shown().is_some(), |d| d.children(span.as_ref().map(|(_, line)| row(line.clone().into()))))
                         .children(zone_rows)
                         .children(self.travel_row(e))
                         .child(match &self.drawer_edit {
@@ -751,7 +758,7 @@ impl CalmView {
                             .flex_col()
                             .gap(px(6.))
                             .child(section("Overlaps with"))
-                            .children(overlaps.into_iter().map(|(o, all_day)| row(o).text_color(if all_day { ALL_DAY_OVERLAP } else { th.now }))),
+                            .children(overlaps.into_iter().map(|(o, soft)| row(o).text_color(if soft { ALL_DAY_OVERLAP } else { th.now }))),
                     )
                 }),
         )
@@ -1466,6 +1473,44 @@ impl CalmView {
 }
 
 impl CalmView {
+    /// For an event spanning days, the whole of it, not just the day shown: a heading, "Thu 19
+    /// Nov → Sun 22 Nov", and a line, "All day · 4 days" or "10 pm Mon → 6:30 am Tue · 32 h".
+    /// From the calendar's own start and end where there are any, so it runs past the data
+    /// loaded; else from the event's pieces.
+    pub(super) fn multi_day(&self, e: &crate::model::Event) -> Option<(String, String)> {
+        use chrono::NaiveDateTime;
+        let at = |d: i32, min: f32| self.data.date(d).and_hms_opt(0, 0, 0).unwrap() + chrono::Duration::minutes(min.round() as i64);
+        let (start, end, all_day): (NaiveDateTime, NaiveDateTime, bool) = match e.edit.as_deref() {
+            Some(r) if r.all_day => (r.start.date_naive().and_hms_opt(0, 0, 0)?, r.end.date_naive().and_hms_opt(0, 0, 0)?, true),
+            Some(r) => (r.start.with_timezone(&chrono::Local).naive_local(), r.end.with_timezone(&chrono::Local).naive_local(), false),
+            None => {
+                let pieces = self.group_of(e.group);
+                let (a, b) = (&self.data.events[*pieces.iter().min_by_key(|&&k| self.data.events[k].day)?], &self.data.events[*pieces.iter().max_by_key(|&&k| self.data.events[k].day)?]);
+                if e.all_day.is_some() { (at(a.day, 0.), at(b.day + 1, 0.), true) } else { (at(a.day, a.start_min), at(b.day, b.start_min + b.dur_min), false) }
+            }
+        };
+        // The last day it's on: an end at midnight belongs to the day before.
+        let last = (end - chrono::Duration::minutes(1)).date();
+        if last <= start.date() {
+            return None;
+        }
+        let year = start.year() != last.year() || start.year() != self.data.date(self.data.today).year();
+        let day = |d: NaiveDate| d.format(if year { "%a %-d %b %Y" } else { "%a %-d %b" }).to_string();
+        let heading = format!("{} \u{2192} {}", day(start.date()), day(last));
+        let line = if all_day {
+            format!("All day · {} days", (last - start.date()).num_days() + 1)
+        } else {
+            let mins = (end - start).num_minutes();
+            let length = match (mins / 60, mins % 60) {
+                (h, 0) => format!("{h} h"),
+                (h, m) => format!("{h} h {m} min"),
+            };
+            let time = |t: NaiveDateTime| format!("{} {}", fmt_time((t.hour() * 60 + t.minute()) as f32), t.format("%a"));
+            format!("{} \u{2192} {} · {length}", time(start), time(end))
+        };
+        Some((heading, line))
+    }
+
     /// "Sat 21 · All day", or "Thu 19 → Sun 22 · All day" for a multi-day event.
     pub(super) fn all_day_span(&self, e: &crate::model::Event) -> String {
         let day = |d: i32| format!("{} {}", DAY_NAMES[d.rem_euclid(7) as usize], self.data.date(d).day());
