@@ -1,0 +1,84 @@
+// calm's keys. Yours, in calm.kdl, add to these and replace them chord by chord;
+// `unbind "d"` removes one. A view can have its own (`keys { … }` inside it), which come
+// before these. The last argument of `bind` is the command; the ones before it are keys.
+// `calm config dump` shows the result.
+
+keys {
+    bind "1" "view 1"
+    bind "2" "view 2"
+    bind "3" "view 3"
+    bind "4" "view 4"
+    bind "5" "view 5"
+    bind "6" "view 6"
+    bind "7" "view 7"
+    bind "8" "view 8"
+    bind "9" "view 9"
+    bind "tab" "view next"
+    bind "shift-tab" "view prev"
+    bind "left" "h" "pan -1"
+    bind "right" "l" "pan 1"
+    bind "up" "k" "scroll -1"
+    bind "down" "j" "scroll 1"
+    bind "-" "zoom out"
+    bind "=" "+" "zoom in"
+    bind "t" "today"
+    bind "f" "full-day"
+
+    bind "/" "search"
+    bind "n" "match next"
+    bind "N" "match prev"
+    bind ":" "prompt"
+
+    bind "s" "create"
+    bind "a" "adjust"
+    bind "delete" "backspace" "delete"
+    bind "o" "changes"
+    bind "r" "sync"
+
+    bind "e" "editor"
+    bind "m" "menu"
+    bind "z" "zones"
+    bind "w" "travel"
+    bind "d" "theme"
+    bind "escape" "close"
+    bind "?" "help"
+    bind "`" "stats"
+    bind "S" "stress"
+}
+
+// Scheduling (S): arrows move a cursor; Enter sets the start, then the end.
+keys "create" {
+    bind "left" "h" "step left"
+    bind "right" "l" "step right"
+    bind "up" "k" "step up"
+    bind "down" "j" "step down"
+    bind "enter" "space" "place"
+    bind "[" "snap finer"
+    bind "]" "snap coarser"
+    bind "f" "free-only"
+    bind "escape" "back"
+}
+
+// Adjusting (A): arrows move the selected event, with Shift they resize it.
+keys "adjust" {
+    bind "left" "h" "step left"
+    bind "right" "l" "step right"
+    bind "up" "k" "step up"
+    bind "down" "j" "step down"
+    bind "shift-left" "H" "stretch left"
+    bind "shift-right" "L" "stretch right"
+    bind "shift-up" "K" "stretch up"
+    bind "shift-down" "J" "stretch down"
+    bind "enter" "done"
+    bind "[" "snap finer"
+    bind "]" "snap coarser"
+    bind "f" "free-only"
+    bind "escape" "back"
+}
+
+// The search field (/): everything else there is typing.
+keys "search" {
+    bind "down" "ctrl-n" "match next"
+    bind "up" "ctrl-p" "match prev"
+    bind "tab" "complete"
+}

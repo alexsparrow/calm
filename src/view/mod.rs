@@ -10,6 +10,7 @@
 
 mod arrange;
 mod chrome;
+mod commands;
 mod editing;
 mod input;
 mod modes;
@@ -30,7 +31,7 @@ use crate::anim::{GENTLE, SNAPPY, Spring, SpringCfg};
 use crate::color::{self, CellStats, ColorEnc};
 use crate::layout::{self, LabelMode, Target};
 use crate::model::{self, Calendar, DAYS, Dataset, MAX_CALENDARS};
-use crate::spec::{Align, Axis, Bind, Coord, Detail, Dir, Extent, Mark, Spec, Values};
+use crate::spec::{Align, Axis, Coord, Detail, Dir, Extent, Mark, Spec, Values};
 use crate::text::Fonts;
 use crate::theme::Theme;
 use arrange::{Arr, Inner, Pt};
@@ -168,6 +169,8 @@ pub struct CalmView {
     config_problems: Vec<String>,
     /// The loaded config, for the editor (each view's KDL, which views the app has edited).
     conf: crate::viewconf::Config,
+    /// What `toggle a=b …` changed, to put back: by (view, command).
+    restore: std::collections::HashMap<(String, String), Vec<(String, String)>>,
     editor: Spring,
     editor_on: bool,
     /// The editor's last outcome: (message, is_error).
@@ -374,6 +377,7 @@ impl CalmView {
             config_files: watch_list(&config.files),
             config_problems,
             conf: config.clone(),
+            restore: Default::default(),
             editor: Spring::new(0.),
             editor_on: opts.edit,
             editor_note: None,
@@ -693,24 +697,6 @@ params_open: opts.controls,
         if self.spec().param(name).is_some() {
             self.values[self.preset].insert(name.to_string(), value.to_string());
         }
-    }
-
-    /// A param's key: toggles flip, segmented params cycle through the options that apply now.
-    fn param_key(&mut self, key: &str) -> bool {
-        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
-        let Some(p) = spec.params.iter().find(|p| p.key.as_deref() == Some(key) && spec.active(p, values, mark)) else { return false };
-        let current = spec.value(&p.name, values, mark);
-        let next = match p.bind {
-            Bind::Toggle => if current == "true" { "false".to_string() } else { "true".to_string() },
-            Bind::Segmented => {
-                let opts: Vec<&str> = spec.options(p, values, mark).map(|o| o.value.as_str()).collect();
-                let i = opts.iter().position(|v| *v == current).map_or(0, |i| (i + 1) % opts.len().max(1));
-                opts.get(i).map(|v| v.to_string()).unwrap_or(current)
-            }
-        };
-        let name = p.name.clone();
-        self.set_param(&name, &next);
-        true
     }
 
     /// Start a crossfade whenever the effective encoding changes, whether
@@ -1113,93 +1099,6 @@ params_open: opts.controls,
         drawer || y < chrome::TOPBAR_H || y > self.viewport.1 - self.margin_b.x + 6.
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        let k = &ev.keystroke;
-        // Keys declared by the view's params come first.
-        let plain = !(k.modifiers.control || k.modifiers.alt || k.modifiers.platform);
-        if plain && self.mode_key(&k.key, k.modifiers.shift, cx) {
-            cx.notify();
-            return;
-        }
-        if plain && self.param_key(&k.key) {
-            cx.notify();
-            return;
-        }
-        match k.key.as_str() {
-            n @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
-                let i = n.parse::<usize>().unwrap() - 1;
-                if i < self.views.len() {
-                    self.set_preset(i);
-                }
-            }
-            "tab" if k.modifiers.shift => self.set_preset((self.preset + self.views.len() - 1) % self.views.len()),
-            "tab" => self.set_preset((self.preset + 1) % self.views.len()),
-            "left" | "h" => self.pan(-1),
-            "right" | "l" => self.pan(1),
-            "up" | "k" if self.scrolls_hours() => self.scroll_hours(-1. / 24., 1., 0.5),
-            "down" | "j" if self.scrolls_hours() => self.scroll_hours(1. / 24., 1., 0.5),
-            "up" | "k" => self.pan(-1),
-            "down" | "j" => self.pan(1),
-            "-" => self.zoom_step(1),
-            "=" | "+" => self.zoom_step(-1),
-            "t" => self.go_today(),
-            "f" => self.toggle_full_day(),
-            "z" => self.zones_on = !self.zones_on,
-            "w" => {
-                self.travel_on = !self.travel_on && self.travel.is_some();
-                self.dirty = true;
-            }
-            "m" => self.menu_on = !self.menu_on,
-            "o" => self.changes_on = !self.changes_on,
-            // After a search, n / N step through its matches (as in vim).
-            "n" | "N" if k.modifiers.shift || k.key == "N" => {
-                self.next_match(-1);
-            }
-            "n" => {
-                self.next_match(1);
-            }
-            "s" if !k.modifiers.shift => self.toggle_mode(true),
-            "/" if !k.modifiers.shift => self.open_prompt(search::Kind::Search),
-            ":" => self.open_prompt(search::Kind::Jump),
-            ";" if k.modifiers.shift => self.open_prompt(search::Kind::Jump),
-            "a" => self.toggle_mode(false),
-            "e" => {
-                self.editor_on = !self.editor_on;
-                self.editor_note = None;
-            }
-            "r" => self.sync_now(),
-            "d" => self.toggle_theme(),
-            "?" => self.help_on = !self.help_on,
-            "/" if k.modifiers.shift => self.help_on = !self.help_on,
-            "`" => self.hud_on = !self.hud_on,
-            // Shift+S: triple the demo data (a stress test).
-            "s" | "S" => {
-                self.stress = !self.stress;
-                self.set_data(model::generate(if self.stress { 3 } else { 1 }));
-            }
-            "delete" | "backspace" if self.selected.is_some() => self.delete_selected(cx),
-            "escape" => {
-                if self.picker.is_some() {
-                    self.picker = None;
-                } else if self.menu_on || self.params_open || self.changes_on {
-                    self.menu_on = false;
-                    self.params_open = false;
-                    self.changes_on = false;
-                } else if self.help_on {
-                    self.help_on = false;
-                } else if self.editor_on {
-                    self.editor_on = false;
-                } else if self.found.is_some() {
-                    self.clear_search(false);
-                } else {
-                    self.selected = None;
-                }
-            }
-            _ => return,
-        }
-        cx.notify();
-    }
-
     fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
         // `--hover` holds the pointer still for screenshots; the real one would reset it.
         if self.scripted_pointer {
@@ -1474,8 +1373,9 @@ impl Render for CalmView {
             // While you type in a field, keys are text, not shortcuts.
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 if this.prompting(window, cx) {
-                    let k = &ev.keystroke;
-                    if this.prompt_key(&k.key, k.modifiers.control, cx) {
+                    if let Some(cmd) = this.command_for(crate::keys::Ctx::Search, &commands::press(&ev.keystroke))
+                        && this.prompt_command(&cmd, cx)
+                    {
                         cx.notify();
                     }
                 } else if !this.typing(window, cx) {

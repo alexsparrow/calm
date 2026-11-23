@@ -223,6 +223,8 @@ pub struct Spec {
     pub hours: (f32, f32),
     pub zones: ZoneAxes,
     pub params: Vec<Param>,
+    /// Its own keys, before the global ones: its params' `key=`, then its `keys` block.
+    pub keys: Vec<crate::keys::Binding>,
     pub color: ColorRef,
     /// Whether aggregate cells carry the day-span glyph.
     pub day_span: Ref,

@@ -16,6 +16,7 @@ use gpui::{Context, Entity, FontWeight, ScrollHandle, Subscription, Window, div,
 
 use super::CalmView;
 use super::input::{InputEvent, InputStyle, TextInput};
+use crate::keys::Command;
 use crate::model::Event;
 use crate::spec::{Axis, Mark};
 use crate::theme::with_alpha;
@@ -292,9 +293,12 @@ impl CalmView {
         let Some(p) = self.prompt.take() else { return };
         let text = p.input.read(cx).text().to_string();
         match p.kind {
-            Kind::Jump => match self.parse_jump(&text) {
-                Some(date) => self.jump_to(date),
-                None => self.toast(format!("Not a date I know: \u{201c}{text}\u{201d}"), None, cx),
+            Kind::Jump => match (self.parse_jump(&text), Command::parse(&text)) {
+                (Some(date), _) => self.jump_to(date),
+                (None, Ok(cmd)) => {
+                    self.run(&cmd, cx);
+                }
+                (None, Err(e)) => self.toast(format!("Not a date or a command: {e}"), None, cx),
             },
             Kind::Search => {
                 self.prompt_query_dirty = true;
@@ -336,17 +340,12 @@ impl CalmView {
         }
     }
 
-    /// Keys for the open field that the field itself doesn't use: ↑ ↓ (and Ctrl+P / Ctrl+N)
-    /// through the matches, Tab to complete. True if taken.
-    pub(super) fn prompt_key(&mut self, key: &str, ctrl: bool, cx: &mut Context<Self>) -> bool {
-        let Some(p) = &self.prompt else { return false };
-        if p.kind != Kind::Search {
-            return false;
-        }
-        match (key, ctrl) {
-            ("down", false) | ("n", true) => self.step_match(1),
-            ("up", false) | ("p", true) => self.step_match(-1),
-            ("tab", false) => {
+    /// A command in the search field (see `keys "search"` in `assets/keys.kdl`): through
+    /// the matches, or completing a facet. True if taken.
+    pub(super) fn prompt_command(&mut self, cmd: &Command, cx: &mut Context<Self>) -> bool {
+        match cmd {
+            Command::Match(d) => self.step_match(*d),
+            Command::Complete => {
                 let Some(text) = self.prompt_text(cx) else { return true };
                 if let Some((_, completed)) = self.suggestions(&text).into_iter().next() {
                     let input = self.prompt.as_ref().unwrap().input.clone();
@@ -489,7 +488,15 @@ impl CalmView {
                 };
                 ("/", info)
             }
-            Kind::Jump => (":", self.parse_jump(&text).map(|d| format!("\u{2192} {}", d.format("%a %-d %b %Y"))).unwrap_or_else(|| if text.trim().is_empty() { "\u{2192} today".into() } else { "?".into() })),
+            Kind::Jump => (
+                ":",
+                match (self.parse_jump(&text), Command::parse(&text)) {
+                    (Some(d), _) => format!("\u{2192} {}", d.format("%a %-d %b %Y")),
+                    _ if text.trim().is_empty() => "\u{2192} today".into(),
+                    (None, Ok(cmd)) => format!("\u{21b5} {}", cmd.describe().text),
+                    (None, Err(e)) => e,
+                },
+            ),
         };
         let width = (self.viewport.0 - 32.).min(560.);
         let mut panel = div()

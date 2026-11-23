@@ -13,9 +13,11 @@ use std::path::{Path, PathBuf};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
 use crate::color::{Compose, Measure};
+use crate::keys::{Binding, Chord, Command, Ctx, Keymap};
 use crate::spec::*;
 
 pub const BUILTIN: &str = include_str!("../assets/views.kdl");
+pub const BUILTIN_KEYS: &str = include_str!("../assets/keys.kdl");
 
 #[derive(Clone, Debug)]
 pub struct Diag {
@@ -51,6 +53,10 @@ pub struct Config {
     /// Views defined before the app's own edits (built-ins and calm.kdl), and views the app has edited.
     pub base_names: Vec<String>,
     pub generated_names: Vec<String>,
+    /// Keys outside any view: the built-ins with yours on top.
+    pub keys: Keymap,
+    /// Worth knowing, but not wrong: the config still applies.
+    pub warnings: Vec<Diag>,
 }
 
 pub fn user_path() -> Option<PathBuf> {
@@ -75,6 +81,7 @@ fn generated_view_names(path: &Path) -> Vec<String> {
 pub fn load() -> (Config, Vec<Diag>) {
     let mut loader = Loader::default();
     loader.file("<built-in views.kdl>", BUILTIN, None);
+    loader.file("<built-in keys.kdl>", BUILTIN_KEYS, None);
     assert!(loader.diags.is_empty(), "built-in views are invalid: {:?}", loader.diags);
     let builtin = loader.finish();
     let user = user_path().filter(|p| p.exists());
@@ -85,6 +92,7 @@ pub fn load() -> (Config, Vec<Diag>) {
 
     let mut loader = Loader::default();
     loader.file("<built-in views.kdl>", BUILTIN, None);
+    loader.file("<built-in keys.kdl>", BUILTIN_KEYS, None);
     if let Some(p) = &user {
         loader.path(p, 0);
     }
@@ -198,6 +206,12 @@ struct Loader {
     param_defaults: Vec<(String, usize, usize, KdlNode)>,
     /// Each source's calendar (file, line, col, name, given explicitly), checked in `check_refs`.
     cal_refs: Vec<(String, usize, usize, String, bool)>,
+    keys: Keymap,
+    /// Each `keys` node's KDL, for `calm config dump`.
+    keys_text: Vec<String>,
+    /// Views' own chords (file, line, col, view, chord), checked against the global keys.
+    view_chords: Vec<(String, usize, usize, String, Chord)>,
+    warnings: Vec<Diag>,
 }
 
 /// Where we are, for diagnostics.
@@ -382,15 +396,85 @@ impl Loader {
                         self.settings.text.push(node.to_string());
                     }
                 }
+                "keys" => self.keys_node(&at, node),
                 "order" => {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "keys", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
         }
+    }
+
+    /// `keys "create" { bind "h" "left" "step left"; unbind "f" }`: the context is optional
+    /// (normal keys).
+    fn keys_node(&mut self, at: &At, node: &KdlNode) {
+        self.check_props(at, node, &[]);
+        let ctx = match Self::arg(node, 0).map(|e| e.value()) {
+            None => Ctx::Normal,
+            Some(KdlValue::String(c)) => {
+                let Some(ctx) = self.choice(at, node.span().offset(), "keys context", c, Ctx::NAMES) else { return };
+                ctx
+            }
+            Some(v) => return self.err(at, node.span().offset(), format!("`keys` takes a context name, not {v}")),
+        };
+        self.keys_text.push(node.to_string());
+        for child in Self::children(node) {
+            match child.name().value() {
+                "bind" => {
+                    for (chord, command) in self.bind_node(at, child) {
+                        self.keys.bind(ctx, chord, command);
+                    }
+                }
+                "unbind" => {
+                    self.check_props(at, child, &[]);
+                    for e in child.entries() {
+                        let Some(k) = e.value().as_string() else { continue };
+                        match Chord::parse(k) {
+                            Ok(c) => {
+                                if !self.keys.unbind(ctx, &c) {
+                                    self.err(at, e.span().offset(), format!("`{k}` isn't bound in {} keys", ctx.name()));
+                                }
+                            }
+                            Err(m) => self.err(at, e.span().offset(), m),
+                        }
+                    }
+                }
+                other => self.err(at, child.span().offset(), format!("unknown node `{other}` in keys{}", suggest(other, &["bind", "unbind"]))),
+            }
+        }
+    }
+
+    /// `bind "h" "left" "pan -1"`: keys, then the command.
+    fn bind_node(&mut self, at: &At, node: &KdlNode) -> Vec<(Chord, Command)> {
+        self.check_props(at, node, &[]);
+        let args: Vec<&KdlEntry> = node.entries().iter().filter(|e| e.name().is_none()).collect();
+        let Some((last, keys)) = args.split_last().filter(|(_, k)| !k.is_empty()) else {
+            self.err(at, node.span().offset(), "`bind` takes one or more keys, then a command: bind \"h\" \"left\" \"pan -1\"");
+            return Vec::new();
+        };
+        let command = match last.value().as_string().map(Command::parse) {
+            Some(Ok(c)) => c,
+            Some(Err(m)) => {
+                self.err(at, last.span().offset(), m);
+                return Vec::new();
+            }
+            None => {
+                self.err(at, last.span().offset(), "the command should be a string");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for e in keys {
+            match e.value().as_string().map(Chord::parse) {
+                Some(Ok(c)) => out.push((c, command.clone())),
+                Some(Err(m)) => self.err(at, e.span().offset(), m),
+                None => self.err(at, e.span().offset(), "a key should be a string"),
+            }
+        }
+        out
     }
 
     /// `zones "Asia/Manila" "Europe/London" { label "Asia/Manila" short="🇵🇭" long="Manila" }`
@@ -644,6 +728,14 @@ impl Loader {
     /// Every source's calendar must be declared, once any calendars are.
     fn check_refs(&mut self) {
         self.apply_defaults();
+        // A view's key over a global one is allowed (it's how a view takes a key over), but
+        // worth a word in case it's a slip.
+        for (file, line, col, view, chord) in std::mem::take(&mut self.view_chords) {
+            if let Some(b) = self.keys.get(Ctx::Normal).iter().find(|b| b.chord == chord) {
+                let message = format!("view `{view}`: `{chord}` takes over the global key (`{}`) in this view", b.command);
+                self.warnings.push(Diag { file, line, col, message });
+            }
+        }
         // Themes named by `theme` must be built in or declared with `colors`.
         let mut known: Vec<String> = ["system", "light", "dark"].map(String::from).to_vec();
         known.extend(self.settings.themes.iter().map(|t| t.name.clone()));
@@ -736,7 +828,10 @@ impl Loader {
             settings.calendars = Some(self.calendars);
         }
         let base_names = views.iter().map(|v: &Spec| v.name.clone()).collect();
-        Config { views, settings, view_text, templates, files: self.files, base_names, generated_names: Vec::new() }
+        let mut settings_text = std::mem::take(&mut settings.text);
+        settings_text.extend(self.keys_text);
+        settings.text = settings_text;
+        Config { views, settings, view_text, templates, files: self.files, base_names, generated_names: Vec::new(), keys: self.keys, warnings: self.warnings }
     }
 
     // --- Node helpers ---------------------------------------------------------
@@ -923,6 +1018,7 @@ impl Loader {
         let mut day_span = Ref::Lit("false".into());
         let (mut rail, mut rail_style) = (Ref::Lit("off".into()), Ref::Lit("rail".into()));
         let mut all_day = true;
+        let mut view_keys: Vec<(Chord, Command, usize, usize)> = Vec::new();
 
         for child in Self::children(node) {
             let off = child.span().offset();
@@ -1042,6 +1138,22 @@ impl Loader {
                     params.extend(tparams);
                 }
                 "param" => params.extend(self.param(at, child)),
+                "keys" => {
+                    self.check_props(at, child, &[]);
+                    if Self::arg(child, 0).is_some() {
+                        self.err(at, off, "a view's `keys` are its normal keys: no context here (modes are set outside views)");
+                    }
+                    for b in Self::children(child) {
+                        if b.name().value() == "bind" {
+                            let (line, col) = at.pos(b.span().offset());
+                            for (chord, command) in self.bind_node(at, b) {
+                                view_keys.push((chord, command, line, col));
+                            }
+                        } else {
+                            self.err(at, b.span().offset(), format!("unknown node `{}` in a view's keys{}", b.name().value(), suggest(b.name().value(), &["bind"])));
+                        }
+                    }
+                }
                 "color" => {
                     self.check_props(at, child, &["measure", "split", "compose", "palette"]);
                     let get = |this: &mut Self, k: &str, dflt: &str| this.str_prop(at, child, k).map_or_else(|| Ref::Lit(dflt.into()), |s| Ref::parse(&s));
@@ -1077,7 +1189,7 @@ impl Loader {
                     }
                 }
                 other => {
-                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "color", "detail", "rail", "all-day"];
+                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "keys", "color", "detail", "rail", "all-day"];
                     self.err(at, off, format!("unknown node `{other}` in view{}", suggest(other, &known)));
                 }
             }
@@ -1110,18 +1222,42 @@ impl Loader {
                 _ => {}
             }
         }
-        let mut keys = HashMap::new();
+        // The view's keys: its params' (`key=`), then its `keys` block; each chord once.
+        let mut keys: Vec<Binding> = Vec::new();
+        let (vline, vcol) = at.pos(off);
+        let mut chords: Vec<(Chord, usize, usize)> = Vec::new();
         for p in &params {
-            if let Some(k) = &p.key
-                && let Some(other) = keys.insert(k.clone(), p.name.clone())
-            {
-                self.err(at, off, format!("view `{name}`: key `{k}` is bound to both `{other}` and `{}`", p.name));
+            let Some(k) = &p.key else { continue };
+            match Chord::parse(k) {
+                Ok(chord) => {
+                    chords.push((chord.clone(), vline, vcol));
+                    keys.push(Binding { chord, command: Command::Cycle(p.name.clone()) });
+                }
+                Err(m) => self.err(at, off, format!("param `{}`: {m}", p.name)),
             }
+        }
+        for (chord, command, line, col) in view_keys {
+            for p in command.params() {
+                if !names.contains(&p) {
+                    self.diags.push(Diag { file: at.file.to_string(), line, col, message: format!("view `{name}` has no param `{p}`{}", suggest(p, &names)) });
+                }
+            }
+            chords.push((chord.clone(), line, col));
+            keys.push(Binding { chord, command });
+        }
+        for (i, (c, line, col)) in chords.iter().enumerate() {
+            if let Some(first) = keys[..i].iter().find(|b| b.chord == *c) {
+                let message = format!("view `{name}`: `{c}` is bound to both `{}` and `{}`", first.command, keys[i].command);
+                self.diags.push(Diag { file: at.file.to_string(), line: *line, col: *col, message });
+            }
+        }
+        for (c, line, col) in chords {
+            self.view_chords.push((at.file.to_string(), line, col, name.clone(), c));
         }
         if self.diags.len() > errors_before {
             return None;
         }
-        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, color, day_span, rail, rail_style, all_day })
+        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, keys, color, day_span, rail, rail_style, all_day })
     }
 }
 
@@ -1154,7 +1290,12 @@ pub fn cli(args: &[String]) -> i32 {
             let json = args.iter().any(|a| a == "--json");
             if json {
                 println!("[{}]", diags.iter().map(Diag::json).collect::<Vec<_>>().join(","));
-            } else if diags.is_empty() {
+                return if diags.is_empty() { 0 } else { 1 };
+            }
+            for w in &config.warnings {
+                eprintln!("warning: {w}");
+            }
+            if diags.is_empty() {
                 let names: Vec<&str> = config.views.iter().map(|v| v.name.as_str()).collect();
                 println!("ok: {} views ({})", names.len(), names.join(", "));
             } else {
@@ -1210,6 +1351,50 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
         let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names, ["Grid", "Lanes", "Energy", "Dial", "Density"]);
+    }
+
+    fn load_config(src: &str) -> (Config, Vec<Diag>) {
+        let mut l = Loader::default();
+        l.file("<built-in>", BUILTIN, None);
+        l.file("<keys>", BUILTIN_KEYS, None);
+        l.file("test.kdl", src, None);
+        l.check_refs();
+        let diags = std::mem::take(&mut l.diags);
+        (l.finish(), diags)
+    }
+
+    #[test]
+    fn keys() {
+        use crate::keys::{Command, Ctx, Press};
+        let press = |key: &str| Press { key: key.into(), typed: Some(key.into()), ..Default::default() };
+        let (c, diags) = load_config(
+            r#"
+            keys { bind "t" "sync"; unbind "d"; }
+            keys "create" { bind "x" "snap finer"; }
+            view "Mine" {
+                facet per-line=7 dir="rows" band=13
+                mark "block"
+                stops { stop "Week" cells=7; }
+                param "rail" bind="segmented" default="off" { option "Off" value="off"; option "Daylight" value="daylight"; }
+                rail show="$rail"
+                keys { bind "j" "set rail=daylight"; }
+            }
+            "#,
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(c.keys.lookup(Ctx::Normal, &press("t")), Some(&Command::Sync));
+        assert!(c.keys.lookup(Ctx::Normal, &press("d")).is_none());
+        assert_eq!(c.keys.lookup(Ctx::Create, &press("x")), Some(&Command::Snap(-1)));
+        let mine = c.views.iter().find(|v| v.name == "Mine").unwrap();
+        assert_eq!(mine.keys.len(), 1);
+        assert!(c.warnings.iter().any(|w| w.message.contains("`j` takes over the global key (`scroll 1`)")), "{:?}", c.warnings);
+
+        let errors = |src: &str| load_config(src).1.into_iter().map(|d| d.message).collect::<Vec<_>>().join("\n");
+        assert!(errors(r#"keys { bind "t" "todya"; }"#).contains("did you mean `today`"));
+        assert!(errors(r#"keys { bind "today"; }"#).contains("one or more keys"));
+        assert!(errors(r#"keys { unbind "F12"; }"#).contains("isn't bound"));
+        assert!(errors(r#"keys "visual" { }"#).contains("keys context"));
+        assert!(errors(r#"view "Grid" { keys { bind "x" "cycle nope"; } }"#).contains("no param `nope`"));
     }
 
     #[test]

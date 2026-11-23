@@ -8,6 +8,7 @@ mod sun;
 mod sync;
 mod text;
 mod theme;
+mod keys;
 mod travel;
 mod zones;
 mod view;

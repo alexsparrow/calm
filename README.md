@@ -225,6 +225,9 @@ copy and change. Reference: [docs/config.md](docs/config.md).
 
 ## Keys
 
+Every key is a command you can rebind, in general, in a mode or in one view; `?` shows what they
+are now. See [Keys](docs/config.md#keys).
+
 **Getting around**
 
 | | |
@@ -238,7 +241,7 @@ copy and change. Reference: [docs/config.md](docs/config.md).
 | `T` | Today |
 | `/` | Search: type a title, or `with:` `in:` `at:` `series:` `is:`; ↑ ↓ through matches, Tab completes, Enter goes there, Esc goes back |
 | `n` `N` | Next / previous match, after a search |
-| `:` | Jump to a date: `:31`, `:12-31`, `:2027-03-04`, `:dec 24`, `:mon`, `:+2w`, `:today` |
+| `:` | Jump to a date: `:31`, `:12-31`, `:2027-03-04`, `:dec 24`, `:mon`, `:+2w`, `:today`; or run a command: `:set measure=demand`, `:view 3` |
 | Click | An event's details · zoom into an overview cell |
 
 **Looking**

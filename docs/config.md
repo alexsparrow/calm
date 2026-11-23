@@ -36,6 +36,7 @@ ignored.
 | `include "path"` | Read another file, relative to this one. `*` is allowed in the last component: `include "views/*.kdl"`. |
 | `hide "Name" "Other"` | Remove views (built-in or included). |
 | `defaults "View" param=value …` | Set a view's param defaults without copying the view, e.g. `defaults "Grid" measure="demand" span=#true`. Checked against that view's params. |
+| `keys { bind "t" "today" … }`, `keys "create" { … }` | Keys, and what they do. See [Keys](#keys). |
 | `order "Name" "Other" …` | Order the lens switcher; unlisted views follow. Keys `1`–`9` follow this order. |
 | `zones "Zone" … { label "Zone" short="…" long="…" }` | Extra time zones (IANA names) shown beside the current one; whichever you're in is dropped. `short` labels the axes (a flag emoji works), `long` names it on hover. |
 | `calendar "Name" color="sage" demand=0.4 label="…" secondary=#true` | A calendar: one chip in the top bar, a colour, and the default demand (0 light – 1 demanding) of its events for Energy and strain. `label` is what the chip says, handy for Google calendars named by an address (`calendar "you@work.com" label="Work"`); chips shorten long names, and show only their dots when even short names don't fit. `secondary=#true` lists the calendar in the ☰ menu (top right) instead of the chip row; calendars that don't fit even as dots go there too. `color` is a palette name (sage, clay, slate, ochre, plum, teal, rose, moss, sky, lavender, sand, stone) or `#rrggbb` (its hue is kept, saturation softened to suit the theme). Up to 12; chips follow this order. Without any `calendar` nodes, each source gets a calendar named by its `calendar=` (or its own name), coloured from the palette in order. |
@@ -154,7 +155,7 @@ param "split" label="By calendar" bind="toggle" key="b" default=#true when-mark=
 |---|---|
 | `label` | Shown before a segmented control, or on a toggle. |
 | `bind` | `segmented` (choose one option) or `toggle` (on/off). Default: segmented if it has options. |
-| `key` | A single key that cycles the options, or flips the toggle. Keys must be unique within a view. |
+| `key` | A key that cycles the options, or flips the toggle: shorthand for `bind "c" "cycle measure"` in the view's `keys`. Only taken while the param is offered. |
 | `row` | Which control row, counting up from the lens switcher (1 is nearest). |
 | `default` | An option `value`, or `#true`/`#false` for toggles. |
 | `when-mark="…"`, `when-mark-not="…"`, `when-param="name=value"`, `when-param-not="name=value"` | Only offer the param (or, on an `option`, the option) when these hold. Repeatable; all must hold. |
@@ -167,6 +168,70 @@ Rules worth knowing:
 - A choice that isn't available right now (after zooming to `heat`, say) falls back to the first
   option that is. The stored choice survives, so zooming back restores it.
 - Where controls appear is up to calm: one bar per `row`, legends on the top-most row.
+
+## Keys
+
+Every key does a **command**, written as text. The built-in keys are
+[`assets/keys.kdl`](../assets/keys.kdl); yours go on top, chord by chord, and `calm config dump`
+shows the result. The same commands run from the `:` prompt (`:set rail=daylight`), which
+still takes dates first (`:31` goes to the 31st), and `?` lists whatever the keys are now.
+
+```kdl
+keys {
+    bind "t" "today"                  // replaces whatever T did
+    bind "ctrl-d" "pan 1"
+    bind "g" "toggle rail=daylight"   // a key for a look
+    unbind "d"                        // nothing on D
+}
+keys "create" {                       // only while scheduling (S)
+    bind "+" "snap finer"
+}
+view "Dial" {
+    // …
+    keys {                            // only in this view, before the global keys
+        bind "j" "set rail=energy"
+    }
+}
+```
+
+`bind` takes one or more keys and then the command. Keys are one character (`t`, `?`, `:`) or a
+name (`left`, `right`, `up`, `down`, `tab`, `enter`, `escape`, `space`, `backspace`, `delete`,
+`home`, `end`, `pageup`, `pagedown`, `f1`–`f12`), after modifiers: `ctrl-`, `alt-`, `shift-`,
+`cmd-`. A capital letter is Shift with it (`N` is `shift-n`). For a symbol, write what Shift
+types (`?`, not `shift-/`).
+
+**Contexts.** `keys` with no name are the normal keys. `keys "create"` and `keys "adjust"` apply
+in those modes and fall back to the view's keys, then the normal ones. `keys "search"` applies
+in the search field, where any other key is typing.
+
+**A view's keys** come before the global ones, so a view can take a key over (Dial could make
+`j` and `k` turn the dial). `calm config check` mentions each key a view takes over, as a
+warning, in case it's a slip. A view's key whose param isn't offered right now (see `when-` on
+params) lets the key through to the global one.
+
+**Commands**
+
+| Command | Does |
+|---|---|
+| `pan -1`, `pan 1` | Back / forward a page at the current zoom |
+| `scroll -1`, `scroll 1` | Scroll the hours, in views with hours; else pan |
+| `zoom in`, `zoom out` | Towards a day / a year |
+| `today`, `full-day` | Go to today · full day / default hours |
+| `view 3`, `view next`, `view prev` | Switch view (by position, as the switcher orders them) |
+| `search`, `prompt` | Open `/` search · the `:` prompt |
+| `match next`, `match prev` | Step through search matches (selecting them; in the field, just moving) |
+| `complete` | Complete the search field's facet |
+| `create`, `adjust` | Schedule and Adjust modes |
+| `delete`, `changes`, `sync` | Delete the selected event · changes waiting to sync · sync now |
+| `editor`, `menu`, `zones`, `travel`, `theme`, `help`, `stats` | Open or flip these |
+| `close` | Close the innermost open thing, else the search, else the selection |
+| `step left` (`right`, `up`, `down`) | In a mode: move the cursor, or the selected event |
+| `stretch left` (…) | Adjust: resize the selected event |
+| `place`, `done`, `back` | Schedule: set the start, then the end · leave the mode · back a step |
+| `snap finer`, `snap coarser`, `free-only` | In a mode: the snap step · free time only |
+| `cycle NAME`, `toggle NAME` | A param of the current view: step through its options, or flip it |
+| `set NAME=VALUE …` | Set the current view's params (all of them, or none if one doesn't fit) |
+| `toggle NAME=VALUE …` | Set them; again, put back what they were |
 
 ## Example: a strain-first week
 

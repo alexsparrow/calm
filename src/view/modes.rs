@@ -16,6 +16,7 @@ use serde_json::json;
 use super::arrange::Pt;
 use super::editing::Undo;
 use super::{CalmView, Hit, chrome};
+use crate::keys::Command;
 use crate::model::{EditRef, Status};
 use crate::spec::{Axis, Coord, Dir, Mark};
 use crate::sync::edit;
@@ -392,38 +393,31 @@ impl CalmView {
 
     // --- Keyboard ----------------------------------------------------------------------------
 
-    /// Keys while in a mode. True if the mode took the key.
-    pub(super) fn mode_key(&mut self, key: &str, shift: bool, cx: &mut Context<Self>) -> bool {
+    /// A command in a mode (see `assets/keys.kdl`). True if taken.
+    pub(super) fn mode_command(&mut self, cmd: &Command, cx: &mut Context<Self>) -> bool {
         if self.mode.is_none() {
             return false;
         }
-        let dir = match key {
-            "left" | "h" => Some((-1, 0)),
-            "right" | "l" => Some((1, 0)),
-            "up" | "k" => Some((0, -1)),
-            "down" | "j" => Some((0, 1)),
-            _ => None,
-        };
-        if let Some((dx, dy)) = dir {
-            if self.creating() {
-                self.move_cursor(dx, dy);
-            } else {
-                self.nudge(dx, dy, shift, cx);
+        match cmd {
+            Command::Step(d) | Command::Stretch(d) => {
+                let (dx, dy) = d.delta();
+                if self.creating() {
+                    self.move_cursor(dx, dy);
+                } else {
+                    self.nudge(dx, dy, matches!(cmd, Command::Stretch(_)), cx);
+                }
             }
-            return true;
-        }
-        match key {
-            "enter" | "space" if self.creating() => {
+            Command::Place if self.creating() => {
                 if self.cursor.is_none() {
                     self.cursor = Some(self.cursor_home());
                 }
                 self.place(cx);
             }
-            "enter" => self.mode = None,
-            "[" => self.snap = SNAPS.iter().rev().copied().find(|&s| s < self.snap).unwrap_or(SNAPS[0]),
-            "]" => self.snap = SNAPS.iter().copied().find(|&s| s > self.snap).unwrap_or(SNAPS[SNAPS.len() - 1]),
-            "f" => self.free_only = !self.free_only,
-            "escape" => match &mut self.mode {
+            Command::Place | Command::Done => self.mode = None,
+            Command::Snap(-1) => self.snap = SNAPS.iter().rev().copied().find(|&s| s < self.snap).unwrap_or(SNAPS[0]),
+            Command::Snap(_) => self.snap = SNAPS.iter().copied().find(|&s| s > self.snap).unwrap_or(SNAPS[SNAPS.len() - 1]),
+            Command::FreeOnly => self.free_only = !self.free_only,
+            Command::Back => match &mut self.mode {
                 Some(Mode::Create { start }) if start.is_some() => *start = None,
                 Some(Mode::Adjust { drag }) if drag.is_some() => *drag = None,
                 _ => {

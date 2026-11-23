@@ -52,9 +52,18 @@ Next, roughly in order:
      perhaps airport codes ("LHR → ICN") for events that don't carry zones.
    - **Caveat seen in real data:** an outbound journey with no return keeps you abroad until the
      next move, so trips need both legs.
-4. **Keybindings and command palette:** all bindings remappable through gpui actions; a vim
-   layer (`hjkl` is already in, then counts and `gg`/`G`); the `:` line (date jumps, below) grows
-   into a command line with fuzzy completion (`:view dial`, `:zoom year`, `:new 9-10 Focus`).
+4. **Keys and commands, then more of calm as grammar.** Done: every key runs a command
+   (`pan -1`, `cycle measure`, `toggle rail=daylight`), bound in KDL per context and per view, and
+   the same commands run from `:`; `?` is built from the keymap. Next:
+   - **Global toggles become channels.** Zones, full day and travel are fields on the view today.
+     `zones` becomes a channel like `rail` (`config`, `primary`, or `visible`: the configured
+     zones plus those the events in view use), the rail gains `travel`, and `W` becomes
+     `toggle rail=travel zones=visible` rather than a feature of its own.
+   - **Overlays:** named bundles of settings that apply to whichever view you're in
+     (`overlay "Travel" key="w" { rail "travel"; zones "visible" }`), off again on a second press.
+   - **The prompt grows:** fuzzy completion and a palette over the same commands
+     (`:view dial`, `:zoom year`, `:new 9-10 Focus`); counts and sequences (`3l`, `gg`); keys in
+     reusable `params` blocks; a `calm do …` command line for agents.
 5. **Search and filters:** filters over any event field (title, people, series, location,
    status, time, rule tags), declared in KDL like views, with params the UI turns into controls.
    They're toggled from the top bar, with calendar visibility as one built-in filter, and views

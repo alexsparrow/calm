@@ -781,58 +781,58 @@ impl CalmView {
                 .child(div().flex_none().font_weight(FontWeight::MEDIUM).child(k))
         };
         let heading = |s: &str| div().mt(px(6.)).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(th.faint).child(s.to_uppercase());
-        let group = |title: &str, keys: &[(&str, &str)]| {
-            div().flex().flex_col().gap(px(8.)).child(heading(title)).children(keys.iter().map(|(k, v)| row(k.to_string(), v.to_string(), false)))
+        let group = |title: &str, rows: Vec<(String, String, bool)>| {
+            (!rows.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(heading(title)).children(rows.into_iter().map(|(k, v, dim)| row(k, v, dim))))
         };
-        let around = group(
-            "Getting around",
-            &[
-                ("1 – 9, Tab", "Switch view"),
-                ("Ctrl+scroll, − =", "Zoom (day … year)"),
-                ("← →", "Previous / next"),
-                ("Scroll, ↑ ↓", "Scroll hours or time"),
-                ("Alt+scroll", "Zoom hours"),
-                ("F, click hour labels", "Full day / default hours"),
-                ("T", "Today"),
-                ("Click", "Details · open a day or week"),
-            ],
-        );
-        let finding = group("Finding", &[("/", "Search (with: in: at: series: is:)"), ("n  N", "Next / previous match"), (":", "Go to a date: 31, 12-31, dec, mon, +2w")]);
-        let changing = group(
-            "Changing",
-            &[
-                ("S, +", "Schedule an event"),
-                ("A, \u{2195}", "Adjust: move, resize"),
-                ("[ ]  F", "In a mode: snap · free time only"),
-                ("Delete", "Delete the selected event"),
-                ("O", "Changes waiting to sync"),
-                ("R", "Sync now"),
-            ],
-        );
-        let looking = group(
-            "Looking",
-            &[("E", "Edit this view"), ("M", "Menu: more calendars, actions"), ("Z", "Extra time zones"), ("W", "Travel: zone rail and the zones you visit"), ("D", "Light / dark"), ("Esc", "Close"), ("`", "Frame stats")],
-        );
-        // This view's own keys, from its params; dimmed when not offered at the current zoom.
-        let (spec, values, mark) = (self.spec(), &self.values[self.preset], self.lens().mark);
-        let view_keys: Vec<_> = spec
-            .params
+        // From the keymaps, so it says what the keys really do. The view's own keys come
+        // first and hide the global ones they take over.
+        use crate::keys::{Command, Ctx, Group, rows};
+        let keys = &self.conf.keys;
+        let spec = self.spec();
+        let normal: Vec<_> = keys.get(Ctx::Normal).iter().filter(|b| !spec.keys.iter().any(|v| v.chord == b.chord)).collect();
+        let listed = |g: Group| rows(normal.iter().copied(), move |d| d.group == g).into_iter().map(|(k, v)| (k, v, false)).collect::<Vec<_>>();
+        let mut around = listed(Group::Around);
+        // What the mouse does too, on the same rows.
+        for (cmd, mouse) in [(Command::Zoom(1), "Ctrl+scroll"), (Command::Scroll(1), "scroll"), (Command::FullDay, "click hour labels")] {
+            match around.iter_mut().find(|r| r.1 == cmd.describe().text) {
+                Some(r) => r.0 = format!("{}, {mouse}", r.0),
+                None => around.push((mouse.to_string(), cmd.describe().text, false)),
+            }
+        }
+        around.extend([("Alt+scroll", "Zoom hours"), ("Click", "Details \u{b7} open a day or week")].map(|(k, v)| (k.to_string(), v.to_string(), false)));
+        let around = group("Getting around", around);
+        let finding = group("Finding", listed(Group::Finding));
+        let changing = group("Changing", listed(Group::Changing));
+        let looking = group("Looking", listed(Group::Looking));
+        let modal: Vec<_> = keys.get(Ctx::Create).iter().chain(keys.get(Ctx::Adjust)).collect();
+        let modes = group("Scheduling, adjusting", rows(modal, |_| true).into_iter().map(|(k, v)| (k, v, false)).collect());
+        let typing = group("In the search field", rows(keys.get(Ctx::Search), |_| true).into_iter().map(|(k, v)| (k, v, false)).collect());
+        // This view's own keys; dimmed when what they change isn't offered at this zoom.
+        let view_rows: Vec<_> = spec
+            .keys
             .iter()
-            .filter_map(|p| {
-                let k = p.key.as_ref()?;
-                let what = p.label.clone().unwrap_or_else(|| p.name.clone());
-                let what = if p.bind == Bind::Toggle { format!("{what} on / off") } else { format!("Cycle {}", what.to_lowercase()) };
-                Some(row(k.to_uppercase(), what, !spec.active(p, values, mark)))
+            .map(|b| {
+                let text = match &b.command {
+                    Command::Cycle(name) => match spec.param(name) {
+                        Some(p) => {
+                            let what = p.label.clone().unwrap_or_else(|| p.name.clone());
+                            if p.bind == Bind::Toggle { format!("{what} on / off") } else { format!("Cycle {}", what.to_lowercase()) }
+                        }
+                        None => b.command.describe().text,
+                    },
+                    c => c.describe().text,
+                };
+                (b.chord.label(), text, !self.offered(&b.command))
             })
             .collect();
-        let view_group = (!view_keys.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(heading(&format!("{} view", spec.name))).children(view_keys));
+        let view_group = group(&format!("{} view", spec.name), view_rows);
         // Two columns when there's room, else one that scrolls.
         let wide = self.viewport.0 >= 760.;
         let column = || div().flex_1().min_w_0().flex().flex_col().gap(px(14.));
         let body = if wide {
-            div().flex().gap(px(32.)).child(column().child(around).child(finding)).child(column().child(changing).child(looking).children(view_group))
+            div().flex().gap(px(32.)).child(column().children(around).children(finding).children(typing).children(modes)).child(column().children(changing).children(looking).children(view_group))
         } else {
-            column().child(around).child(finding).child(changing).child(looking).children(view_group)
+            column().children(around).children(finding).children(typing).children(changing).children(modes).children(looking).children(view_group)
         };
         Some(
             div()
