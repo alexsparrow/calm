@@ -54,13 +54,13 @@ Next, roughly in order:
      next move, so trips need both legs.
 4. **Keys and commands, then more of calm as grammar.** Done: every key runs a command
    (`pan -1`, `cycle measure`, `toggle rail=daylight`), bound in KDL per context and per view, and
-   the same commands run from `:`; `?` is built from the keymap. Next:
-   - **Global toggles become channels.** Zones, full day and travel are fields on the view today.
-     `zones` becomes a channel like `rail` (`config`, `primary`, or `visible`: the configured
-     zones plus those the events in view use), the rail gains `travel`, and `W` becomes
-     `toggle rail=travel zones=visible` rather than a feature of its own.
-   - **Overlays:** named bundles of settings that apply to whichever view you're in
-     (`overlay "Travel" key="w" { rail "travel"; zones "visible" }`), off again on a second press.
+   the same commands run from `:`; `?` is built from the keymap. Also done: `zones` is a channel
+   (`config`, `visible`, `primary`) that a session can set on any view, like `rail` (which gained
+   `travel`), and overlays name bundles of settings: Travel (`W`) is
+   `overlay "Travel" key="w" { rail "travel"; zones "visible" }`, and `Z` is
+   `toggle zones=primary`. Next:
+   - **More channels a session can set:** the colour measure, mark, all-day events, and filters
+     once they exist; overlays show in the top bar while on.
    - **The prompt grows:** fuzzy completion and a palette over the same commands
      (`:view dial`, `:zoom year`, `:new 9-10 Focus`); counts and sequences (`3l`, `gg`); keys in
      reusable `params` blocks; a `calm do …` command line for agents.

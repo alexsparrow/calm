@@ -768,6 +768,7 @@ impl CalmView {
     fn zone_rail(
         &self,
         t: &crate::travel::Travel,
+        ground: bool,
         midnight: chrono::DateTime<chrono::Utc>,
         inner: &super::arrange::Inner,
         time_y: bool,
@@ -794,8 +795,9 @@ impl CalmView {
                         }
                     }
                 }
-                // Travelling (`W`), the ground says nothing the labels and columns don't.
-                None if self.travel_on => {}
+                // The travel rail: just the journeys; the ground says nothing the labels and
+                // columns don't.
+                None if !ground => {}
                 None => {
                     let h = seg.ahead;
                     let color = if h.abs() < 0.01 {
@@ -951,13 +953,7 @@ impl CalmView {
         let time_y = spec.y == Axis::TimeOfDay;
         let time_x = spec.x == Axis::TimeOfDay;
         // Extra zones labelling this lens's time axis, unless its grammar narrows to primary.
-        let zones: Vec<chrono_tz::Tz> = if li == self.preset {
-            self.shown_zones()
-        } else if self.zones_on && spec.zones == crate::spec::ZoneAxes::All {
-            self.zones.extra.clone()
-        } else {
-            Vec::new()
-        };
+        let zones: Vec<chrono_tz::Tz> = self.shown_zones_of(li);
 
         // Cell boxes once lines separate, with alternate months gently tinted.
         let box_a = a * boxn * (1. - heat);
@@ -1121,15 +1117,15 @@ impl CalmView {
                     let value = |minute: f32| match kind {
                         crate::spec::Rail::Energy => self.data.energy_at(d, minute),
                         crate::spec::Rail::Daylight => place.map_or(0., |p| crate::sun::daylight(crate::sun::elevation(p, date, minute, utc))),
-                        crate::spec::Rail::Zone => 0.,
+                        crate::spec::Rail::Zone | crate::spec::Rail::Travel => 0.,
                     };
                     let rail_box = |u0: f32, u1: f32, w: f32| -> Option<Rect> {
                         let (p0, p1) = (inner.map(u0, u0), inner.map(u1, u1));
                         let (s0, s1) = if time_y { (p0.1.max(ci[1]), p1.1.min(ci[3])) } else { (p0.0.max(ci[0]), p1.0.min(ci[2])) };
                         (s1 > s0).then(|| if time_y { [ci[0] - RAIL_W + 1., s0, ci[0] - RAIL_W + 1. + w, s1] } else { [s0, ci[1] - RAIL_W + 1., s1, ci[1] - RAIL_W + 1. + w] })
                     };
-                    if let (crate::spec::Rail::Zone, Some(t)) = (kind, &self.travel) {
-                        self.zone_rail(t, midnight, &inner, time_y, ra, &rail_box, window, f);
+                    if let (crate::spec::Rail::Zone | crate::spec::Rail::Travel, Some(t)) = (kind, &self.travel) {
+                        self.zone_rail(t, kind == crate::spec::Rail::Zone, midnight, &inner, time_y, ra, &rail_box, window, f);
                         continue;
                     }
                     // Runs of near-equal energy draw as one quad: far fewer than one per step.
@@ -1152,7 +1148,7 @@ impl CalmView {
                             match kind {
                                 crate::spec::Rail::Energy => color::ramp(&th, color::Measure::Demand, 0.2 + 0.8 * level),
                                 crate::spec::Rail::Daylight => color::daylight(&th, level),
-                                crate::spec::Rail::Zone => th.faint,
+                                crate::spec::Rail::Zone | crate::spec::Rail::Travel => th.faint,
                             },
                             ra,
                         );

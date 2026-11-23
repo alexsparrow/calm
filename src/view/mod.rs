@@ -169,8 +169,8 @@ pub struct CalmView {
     config_problems: Vec<String>,
     /// The loaded config, for the editor (each view's KDL, which views the app has edited).
     conf: crate::viewconf::Config,
-    /// What `toggle a=b …` changed, to put back: by (view, command).
-    restore: std::collections::HashMap<(String, String), Vec<(String, String)>>,
+    /// What `toggle a=b …` changed, to put back (`None`: the view's own): by (view, command).
+    restore: std::collections::HashMap<(String, String), Vec<(String, Option<String>)>>,
     editor: Spring,
     editor_on: bool,
     /// The editor's last outcome: (message, is_error).
@@ -194,7 +194,8 @@ pub struct CalmView {
     /// Time-zone moves found in your events (see `crate::travel`), and whether they're shown
     /// (`W`: the zone rail in every timed view, and hour columns for the zones they visit).
     travel: Option<crate::travel::Travel>,
-    travel_on: bool,
+    /// Channels set for this session on every view (`set rail=travel`), over the views' own.
+    over: crate::spec::Values,
     /// Where you are, for daylight: calm.kdl's `location`, else your zone's city.
     place: Option<crate::sun::Place>,
     now_min: f32,
@@ -208,7 +209,6 @@ pub struct CalmView {
     margin_t: Spring,
     /// Extra time zones (a global setting) and whether they are shown.
     zones: crate::zones::Zones,
-    zones_on: bool,
     /// Live sync, when sources are configured.
     sync: Option<Sync>,
     /// What the command line pinned, which config reloads must not override.
@@ -402,7 +402,6 @@ impl CalmView {
             margin_b: Spring::new(CONTROLS_ROW),
             margin_t: Spring::new(scene::MARGIN_T),
             zones: crate::zones::Zones::load(opts.zones.as_deref(), config.settings.zones.as_ref()),
-            zones_on: true,
             sync,
             pinned: Pinned { zones: opts.zones.is_some(), theme: opts.dark.is_some(), synthetic: opts.demo || opts.bench },
             zone_hits: Default::default(),
@@ -463,10 +462,12 @@ params_open: opts.controls,
             energy,
             place: None,
             travel: None,
-            travel_on: false,
+            over: Default::default(),
         };
         this.refresh_travel();
-        this.travel_on = opts.travel && this.travel.is_some();
+        if opts.travel {
+            this.over.extend([("rail".to_string(), "travel".to_string()), ("zones".to_string(), "visible".to_string())]);
+        }
         this.restat();
         this.resolve_place(&config.settings);
         if let Some(q) = opts.search.clone() {
@@ -547,15 +548,27 @@ params_open: opts.controls,
         (l, t, (vw - l - scene::MARGIN_R).max(200.), (vh - t - b).max(200.))
     }
 
-    /// Extra zones labelling the current lens's time axis (none if the grammar narrows to primary).
+    /// How view `p` labels its time axis: its `zones` channel, or the session's.
+    pub(super) fn zones_of(&self, p: usize) -> crate::spec::ZoneAxes {
+        self.views[p].zones(&self.over, &self.values[p], self.lenses[p].mark)
+    }
+
+    /// Extra zones labelling the current lens's time axis.
     fn shown_zones(&self) -> Vec<chrono_tz::Tz> {
-        if self.spec().zones != crate::spec::ZoneAxes::All {
+        self.shown_zones_of(self.preset)
+    }
+
+    /// Extra zones labelling lens `p`'s time axis: none, the configured ones, or those and
+    /// the zones your journeys in view go to and from.
+    pub(super) fn shown_zones_of(&self, p: usize) -> Vec<chrono_tz::Tz> {
+        use crate::spec::ZoneAxes;
+        let how = self.zones_of(p);
+        if how == ZoneAxes::Primary {
             return Vec::new();
         }
-        let mut zones = if self.zones_on { self.zones.extra.clone() } else { Vec::new() };
-        // Travelling (`W`): the zones your moves in view go to and from, unless already shown.
-        if let (true, Some(t)) = (self.travel_on, &self.travel) {
-            let l = self.lens();
+        let mut zones = self.zones.extra.clone();
+        if let (ZoneAxes::Visible, Some(t)) = (how, &self.travel) {
+            let l = &self.lenses[p];
             let (s, n) = (l.start.target.floor() as i32, l.zoom.target.exp2().ceil() as i32);
             let at = |d: i32| self.data.date(d).and_hms_opt(0, 0, 0).unwrap().and_utc();
             let date = self.data.date(self.data.today);
@@ -1893,13 +1906,9 @@ impl CalmView {
         if spec.coord != Coord::Cartesian || !timed || mark != spec.mark {
             return None;
         }
-        // Travelling (`W`): the zone rail, whatever the view's own rail is.
-        if self.travel_on && self.travel.is_some() {
-            return Some((crate::spec::Rail::Zone, false));
-        }
-        spec.rail(&self.values[p], mark).filter(|(kind, _)| match kind {
+        spec.rail(&self.over, &self.values[p], mark).filter(|(kind, _)| match kind {
             crate::spec::Rail::Daylight => self.place.is_some(),
-            crate::spec::Rail::Zone => self.travel.is_some(),
+            crate::spec::Rail::Zone | crate::spec::Rail::Travel => self.travel.is_some(),
             crate::spec::Rail::Energy => true,
         })
     }

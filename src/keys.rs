@@ -188,8 +188,6 @@ pub enum Command {
     Sync,
     Editor,
     Menu,
-    Zones,
-    Travel,
     Theme,
     Help,
     Stats,
@@ -216,6 +214,8 @@ pub enum Command {
     Set(Vec<(String, String)>),
     /// `toggle rail=travel zones=visible`: set them, or put back what they were.
     Toggle(Vec<(String, String)>),
+    /// A named toggle from config (`overlay "Travel" { rail "travel"; zones "visible" }`).
+    Overlay(String),
 }
 
 /// How the help card files a command: its section, and a row it shares with its opposite.
@@ -234,7 +234,6 @@ pub enum Group {
     Looking,
     Mode,
     Typing,
-    View,
     /// Not listed.
     Hidden,
 }
@@ -253,8 +252,6 @@ const PLAIN: &[(&str, Command)] = &[
     ("sync", Command::Sync),
     ("editor", Command::Editor),
     ("menu", Command::Menu),
-    ("zones", Command::Zones),
-    ("travel", Command::Travel),
     ("theme", Command::Theme),
     ("help", Command::Help),
     ("stats", Command::Stats),
@@ -269,8 +266,8 @@ const PLAIN: &[(&str, Command)] = &[
 /// Every command's first word, for suggestions.
 pub const NAMES: &[&str] = &[
     "pan", "scroll", "zoom", "today", "full-day", "view", "search", "prompt", "match", "complete", "create", "adjust", "delete", "changes", "sync", "editor",
-    "menu", "zones", "travel", "theme", "help", "stats", "close", "stress", "step", "stretch", "place", "done", "back", "snap", "free-only", "cycle", "set",
-    "toggle",
+    "menu", "theme", "help", "stats", "close", "stress", "step", "stretch", "place", "done", "back", "snap", "free-only", "cycle", "set",
+    "toggle", "overlay",
 ];
 
 fn sign(s: &str, neg: &[&str], pos: &[&str]) -> Option<i32> {
@@ -337,6 +334,8 @@ impl Command {
                 if head == "step" { Command::Step(d) } else { Command::Stretch(d) }
             }
             "cycle" => Command::Cycle(one("a param name")?.to_string()),
+            "overlay" if !rest.is_empty() => Command::Overlay(rest.join(" ")),
+            "overlay" => return Err("`overlay` takes an overlay's name".into()),
             "set" => Command::Set(assignments(rest)?),
             // `toggle span` flips a toggle param; `toggle a=b …` sets or restores.
             "toggle" => match rest {
@@ -384,8 +383,6 @@ impl Command {
             Command::Sync => d(Changing, "sync", "Sync now"),
             Command::Editor => d(Looking, "editor", "Edit this view"),
             Command::Menu => d(Looking, "menu", "Menu: more calendars, actions"),
-            Command::Zones => d(Looking, "zones", "Extra time zones"),
-            Command::Travel => d(Looking, "travel", "Travel: zone rail and the zones you visit"),
             Command::Theme => d(Looking, "theme", "Light / dark"),
             Command::Close => d(Looking, "close", "Close"),
             Command::Help => d(Looking, "help", "These keys"),
@@ -398,9 +395,10 @@ impl Command {
             Command::Back => d(Mode, "back", "Back a step, or leave"),
             Command::Snap(_) => d(Mode, "snap", "Snap finer / coarser"),
             Command::FreeOnly => d(Mode, "free-only", "Free time only"),
-            Command::Cycle(p) => Describe { group: View, row: "", text: format!("Cycle {p}") },
-            Command::Set(a) => Describe { group: View, row: "", text: format!("Set {}", show(a)) },
-            Command::Toggle(a) => Describe { group: View, row: "", text: format!("Toggle {}", show(a)) },
+            Command::Cycle(p) => Describe { group: Looking, row: "", text: format!("Cycle {p}") },
+            Command::Set(a) => Describe { group: Looking, row: "", text: format!("Set {}", show(a)) },
+            Command::Toggle(a) => Describe { group: Looking, row: "", text: format!("Toggle {}", show(a)) },
+            Command::Overlay(name) => Describe { group: Looking, row: "", text: name.clone() },
         }
     }
 }
@@ -424,6 +422,7 @@ impl fmt::Display for Command {
             Command::Cycle(p) => format!("cycle {p}"),
             Command::Set(a) => format!("set {}", assign(a)),
             Command::Toggle(a) => format!("toggle {}", assign(a)),
+            Command::Overlay(name) => format!("overlay {name}"),
             c => PLAIN.iter().find(|(_, p)| p == c).map(|(n, _)| n.to_string()).unwrap_or_default(),
         };
         f.write_str(&s)
@@ -454,6 +453,8 @@ fn strsim(a: &str, b: &str) -> usize {
 pub struct Binding {
     pub chord: Chord,
     pub command: Command,
+    /// What the help card says, if not the command's own description.
+    pub help: Option<String>,
 }
 
 /// Bindings by context, latest first: a later `bind` of the same chord replaces the earlier.
@@ -473,11 +474,11 @@ impl Keymap {
         }
     }
 
-    pub fn bind(&mut self, ctx: Ctx, chord: Chord, command: Command) {
+    pub fn bind(&mut self, ctx: Ctx, chord: Chord, command: Command, help: Option<String>) {
         let list = self.list(ctx);
         match list.iter_mut().find(|b| b.chord == chord) {
-            Some(b) => b.command = command,
-            None => list.push(Binding { chord, command }),
+            Some(b) => (b.command, b.help) = (command, help),
+            None => list.push(Binding { chord, command, help }),
         }
     }
 
@@ -509,11 +510,11 @@ pub fn rows<'a>(bindings: impl IntoIterator<Item = &'a Binding>, group: impl Fn(
         if !group(&d) {
             continue;
         }
-        let id = if d.row.is_empty() { format!("{:?}", b.command) } else { d.row.to_string() };
+        let id = if d.row.is_empty() || b.help.is_some() { format!("{:?}", b.command) } else { d.row.to_string() };
         let i = match rows.iter().position(|r| r.0 == id) {
             Some(i) => i,
             None => {
-                rows.push((id, d.text, Vec::new()));
+                rows.push((id, b.help.clone().unwrap_or(d.text), Vec::new()));
                 rows.len() - 1
             }
         };
@@ -602,7 +603,7 @@ mod tests {
     fn keymap_rows() {
         let mut k = Keymap::default();
         fn b(k: &mut Keymap, key: &str, cmd: &str) {
-            k.bind(Ctx::Normal, Chord::parse(key).unwrap(), Command::parse(cmd).unwrap());
+            k.bind(Ctx::Normal, Chord::parse(key).unwrap(), Command::parse(cmd).unwrap(), None);
         }
         b(&mut k, "left", "pan -1");
         b(&mut k, "right", "pan 1");

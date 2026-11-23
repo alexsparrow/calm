@@ -251,7 +251,7 @@ are now. See [Keys](docs/config.md#keys).
 | `C` · `B` · `V` | Colour measure · by calendar · composition (each view lists its own) |
 | `G` | Day-span glyph in overview cells |
 | `Z` | Extra time zones |
-| `W` | Travel: journeys (events with different start and end zones) marked beside each day with their local times, plus hour columns for the zones you visit |
+| `W` | Travel: journeys (events with different start and end zones) marked beside each day with their local times, plus hour columns for the zones you visit. It's an [overlay](docs/config.md#overlays), so you can make your own |
 | `D` | Light / dark (follows the system by default) |
 | `E` | Edit this view (and your energy settings) |
 | `M`, ☰ | Menu: secondary calendars and actions |

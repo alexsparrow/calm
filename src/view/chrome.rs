@@ -591,7 +591,7 @@ impl CalmView {
         let date = self.data.date(e.day);
         let span = self.multi_day(e);
         // The event's time in each extra zone, flagging a different day.
-        let zone_rows: Vec<_> = if self.zones_on && e.all_day.is_none() { self.zones.extra.clone() } else { Vec::new() }
+        let zone_rows: Vec<_> = if self.over.get("zones").map(String::as_str) != Some("primary") && e.all_day.is_none() { self.zones.extra.clone() } else { Vec::new() }
             .into_iter()
             .map(|tz| {
                 let start = e.start_min + self.zones.delta(tz, date) as f32;
@@ -972,16 +972,16 @@ const EDIT_ROWS: [EditRow; 11] = [
     ("Down (y)", "y", None, &[("Time", "time-of-day"), ("Lane", "lane"), ("Calendar", "calendar"), ("Demand", "demand"), ("None", "none")]),
     ("Overlaps", "collide", None, &[("Side by side", "split"), ("Conflicts", "highlight-conflict"), ("Overlay", "overlay")]),
     ("Mark", "mark", None, &[("Block", "block"), ("Pill", "pill"), ("List", "list"), ("Heat", "heat")]),
-    ("Time zones", "zones", None, &[("All", "all"), ("Primary", "primary")]),
+    ("Time zones", "zones", None, &[("Configured", "config"), ("And visited", "visible"), ("Primary", "primary")]),
     ("All-day events", "all-day", None, &[("Shown", "shown"), ("Hidden", "hidden")]),
-    ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight"), ("Zone", "zone")]),
+    ("Rail", "rail", Some("show"), &[("Off", "off"), ("Energy", "energy"), ("Daylight", "daylight"), ("Zone", "zone"), ("Travel", "travel")]),
     ("Rail style", "rail", Some("style"), &[("Width + colour", "rail"), ("Colour", "strip")]),
 ];
 
 impl CalmView {
     /// The KDL value a view currently has for an editor row.
     fn edit_current(spec: &crate::spec::Spec, child: &str, prop: Option<&str>) -> String {
-        use crate::spec::{Axis, Collide, Coord, Dir, Mark, ZoneAxes};
+        use crate::spec::{Axis, Collide, Coord, Dir, Mark};
         // A literal value as written; a `$param` shows as no choice selected.
         let lit = |r: &crate::spec::Ref| match r {
             crate::spec::Ref::Lit(v) => v.clone(),
@@ -1013,7 +1013,10 @@ impl CalmView {
                 Mark::Heat => "heat",
             }
             .into(),
-            ("zones", _) => (if spec.zones == ZoneAxes::Primary { "primary" } else { "all" }).into(),
+            ("zones", _) => match lit(&spec.zones).as_str() {
+                "all" => "config".into(),
+                z => z.into(),
+            },
             ("all-day", _) => (if spec.all_day { "shown" } else { "hidden" }).into(),
             ("rail", Some("show")) => lit(&spec.rail),
             ("rail", _) => lit(&spec.rail_style),

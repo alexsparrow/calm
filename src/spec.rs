@@ -123,18 +123,27 @@ pub enum Rail {
     Energy,
     /// The sun's elevation where you are.
     Daylight,
-    /// How far your clock is from home's, while you travel (needs `travel`).
+    /// How far your clock is from home's, while you travel, with your journeys marked.
     Zone,
+    /// Just the journeys, and their local times.
+    Travel,
 }
 
 /// Time-zone labelling of the time axis.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ZoneAxes {
-    /// Every configured zone gets its own row or column of hour labels.
-    All,
     /// Only the primary zone, e.g. where extra label rings would be clutter.
     Primary,
+    /// Every configured zone gets its own row or column of hour labels (`config`; `all`, as
+    /// it used to be called, still works).
+    Config,
+    /// The configured zones, and those your journeys in view go to and from.
+    Visible,
 }
+
+/// Channels a session can set on any view, whatever the view binds them to: name and
+/// values. (`set rail=travel`; see `keys`.)
+pub const CHANNELS: &[(&str, &[&str])] = &[("rail", &["off", "energy", "daylight", "zone", "travel"]), ("zones", &["primary", "config", "visible"])];
 
 /// A channel value: written literally, or `$name` to take a param's value.
 #[derive(Clone, Debug, PartialEq)]
@@ -221,7 +230,7 @@ pub struct Spec {
     pub stops: Vec<Stop>,
     /// The inner time window the view opens with, as fractions of a day.
     pub hours: (f32, f32),
-    pub zones: ZoneAxes,
+    pub zones: Ref,
     pub params: Vec<Param>,
     /// Its own keys, before the global ones: its params' `key=`, then its `keys` block.
     pub keys: Vec<crate::keys::Binding>,
@@ -346,14 +355,40 @@ impl Spec {
 
     /// What the rail shows, if anything, and whether its width follows the value (`rail`)
     /// or only its colour (`strip`).
-    pub fn rail(&self, values: &Values, mark: Mark) -> Option<(Rail, bool)> {
-        let kind = match self.resolve(&self.rail, values, mark).as_str() {
+    /// A channel's value, the session's (`over`) before the view's own.
+    fn channel(&self, name: &str, r: &Ref, over: &Values, values: &Values, mark: Mark) -> String {
+        over.get(name).cloned().unwrap_or_else(|| self.resolve(r, values, mark))
+    }
+
+    pub fn rail(&self, over: &Values, values: &Values, mark: Mark) -> Option<(Rail, bool)> {
+        let kind = match self.channel("rail", &self.rail, over, values, mark).as_str() {
             "energy" => Rail::Energy,
             "daylight" => Rail::Daylight,
             "zone" => Rail::Zone,
+            "travel" => Rail::Travel,
             _ => return None,
         };
         Some((kind, self.resolve(&self.rail_style, values, mark) != "strip"))
+    }
+
+    pub fn zones(&self, over: &Values, values: &Values, mark: Mark) -> ZoneAxes {
+        match self.channel("zones", &self.zones, over, values, mark).as_str() {
+            "primary" => ZoneAxes::Primary,
+            "visible" => ZoneAxes::Visible,
+            _ => ZoneAxes::Config,
+        }
+    }
+
+    /// A session channel's value here, without the session: what `toggle` puts back.
+    pub fn own_channel(&self, name: &str, values: &Values, mark: Mark) -> String {
+        match name {
+            "rail" => self.resolve(&self.rail, values, mark),
+            "zones" => match self.resolve(&self.zones, values, mark).as_str() {
+                "all" => "config".into(),
+                z => z.into(),
+            },
+            _ => String::new(),
+        }
     }
 
     pub fn detail(&self, values: &Values, mark: Mark) -> Detail {

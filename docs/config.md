@@ -37,6 +37,7 @@ ignored.
 | `hide "Name" "Other"` | Remove views (built-in or included). |
 | `defaults "View" param=value …` | Set a view's param defaults without copying the view, e.g. `defaults "Grid" measure="demand" span=#true`. Checked against that view's params. |
 | `keys { bind "t" "today" … }`, `keys "create" { … }` | Keys, and what they do. See [Keys](#keys). |
+| `overlay "Name" key="w" { rail "travel"; zones "visible" }` | Settings that go on together over whichever view you're in, and off again. See [Overlays](#overlays). |
 | `order "Name" "Other" …` | Order the lens switcher; unlisted views follow. Keys `1`–`9` follow this order. |
 | `zones "Zone" … { label "Zone" short="…" long="…" }` | Extra time zones (IANA names) shown beside the current one; whichever you're in is dropped. `short` labels the axes (a flag emoji works), `long` names it on hover. |
 | `calendar "Name" color="sage" demand=0.4 label="…" secondary=#true` | A calendar: one chip in the top bar, a colour, and the default demand (0 light – 1 demanding) of its events for Energy and strain. `label` is what the chip says, handy for Google calendars named by an address (`calendar "you@work.com" label="Work"`); chips shorten long names, and show only their dots when even short names don't fit. `secondary=#true` lists the calendar in the ☰ menu (top right) instead of the chip row; calendars that don't fit even as dots go there too. `color` is a palette name (sage, clay, slate, ochre, plum, teal, rose, moss, sky, lavender, sand, stone) or `#rrggbb` (its hue is kept, saturation softened to suit the theme). Up to 12; chips follow this order. Without any `calendar` nodes, each source gets a calendar named by its `calendar=` (or its own name), coloured from the palette in order. |
@@ -89,13 +90,13 @@ Required: `facet`, `mark`, and `stops` with at least one `stop`.
 | `mark "…" [lod-extent=…] { lod … }` | `block`, `pill`, `list`, `heat` | What each event is drawn as (in polar coordinates blocks and pills bend into arcs; `arc` is accepted as another name for `block`), and below which cell size (`lod below=PIXELS mark=…`, in order) to draw something simpler. `lod-extent` picks what is measured: `time` (default; the cell along its time axis, so turning a view keeps its thresholds meaningful), `height`, `width`, or `min` (the smaller side). |
 | `stops { stop "Name" cells=N align=… }` | `align`: `cell`, `line` (default), `month`, `group` | Zoom snap points, smallest first. `cells` is how many days are visible. `month` snaps to whole weeks spanning a month; `group` to multiples of `cells` from the data's start (quarters, years). |
 | `hours from="H:MM" to="H:MM"` | `0:00`–`24:00` | The time window the view opens with (`F` toggles the full day). Default: the whole day. |
-| `zones "…"` | `all` (default), `primary` | Whether extra time zones label the time axis (see the README). |
+| `zones "…"` | `config` (default; `all` is the old name), `visible`, `primary` | Which zones label the time axis: the configured ones, those and the zones your journeys in view go to and from, or just yours. `Z` hides the extras (`toggle zones=primary`), and the Travel overlay (`W`) sets `visible`. |
 | `use "params-name" { default "param" value }` | | Include a `params` set, optionally overriding defaults. |
 | `param …` | | A param just for this view (see below). |
 | `color measure=… split=… compose=… palette=…` | literal or `"$param"` | What colours marks. See below. |
 | `detail day-span=…` | `#true`, `#false` or `"$param"` | The first-start → last-end bar inside aggregate cells. |
 | `all-day "shown"` | `shown` (default), `hidden` | All-day events, drawn to suit the mark: bars in a band above the time axis (multi-day events as one bar, stacked so each keeps its row), rings inside a dial's centre, leading rows in lists, and stripes along the top of aggregate cells. They don't count towards energy, strain or the hours-based colour measures. |
-| `rail show=… style=…` | `show`: `off` (default), `energy`, `daylight`, `zone`; `style`: `rail` (default) or `strip` | A series beside each day's time axis. `energy` uses the Demand colour scale, so an event coloured by Demand matches the rail when its demand matches your energy, and strained events get a dot on it. `daylight` is the sun's elevation where you are (night → dawn → full day). `zone` is how far your clock is from home's while you travel: quiet at home, warm east, cool west, with each journey labelled where it starts and ends. A move between zones is an event whose start and end are in different zones: in Google Calendar, give the event separate start and end time zones; a feed says the same with `DTSTART;TZID=…` and `DTEND;TZID=…`. Clicking a journey shows it in local times ("16:35 BST → 13:20 +1 KST · +8 h"); `calm travel` lists every move found. `W` shows the zone rail in every timed view, whatever its own rail, and adds hour columns for the zones your moves in view visit; journeys (flights, trains, drives) draw as dashes, labelled with their local times where they start ("16:35 BST → KST +8h") and end ("13:20 KST"); the rest of the rail stays clear. `rail` widens with the value; `strip` is colour only. Needs a cartesian time axis. Grid shows energy by default; change it in the editor (`E`). |
+| `rail show=… style=…` | `show`: `off` (default), `energy`, `daylight`, `zone`, `travel`; `style`: `rail` (default) or `strip` | A series beside each day's time axis. `energy` uses the Demand colour scale, so an event coloured by Demand matches the rail when its demand matches your energy, and strained events get a dot on it. `daylight` is the sun's elevation where you are (night → dawn → full day). `zone` is how far your clock is from home's while you travel: quiet at home, warm east, cool west, with each journey labelled where it starts and ends. A move between zones is an event whose start and end are in different zones: in Google Calendar, give the event separate start and end time zones; a feed says the same with `DTSTART;TZID=…` and `DTEND;TZID=…`. Clicking a journey shows it in local times ("16:35 BST → 13:20 +1 KST · +8 h"); `calm travel` lists every move found. Journeys (flights, trains, drives) draw as dashes, labelled with their local times where they start ("16:35 BST → KST +8h") and end ("13:20 KST"). `travel` is just the journeys, the rest of the rail clear; the Travel overlay (`W`) shows it in every timed view, with `zones "visible"`. `rail` widens with the value; `strip` is colour only. Needs a cartesian time axis. Grid shows energy by default; change it in the editor (`E`). |
 
 ### Colour
 
@@ -223,15 +224,40 @@ params) lets the key through to the global one.
 | `complete` | Complete the search field's facet |
 | `create`, `adjust` | Schedule and Adjust modes |
 | `delete`, `changes`, `sync` | Delete the selected event · changes waiting to sync · sync now |
-| `editor`, `menu`, `zones`, `travel`, `theme`, `help`, `stats` | Open or flip these |
+| `editor`, `menu`, `theme`, `help`, `stats` | Open or flip these |
 | `close` | Close the innermost open thing, else the search, else the selection |
 | `step left` (`right`, `up`, `down`) | In a mode: move the cursor, or the selected event |
 | `stretch left` (…) | Adjust: resize the selected event |
 | `place`, `done`, `back` | Schedule: set the start, then the end · leave the mode · back a step |
 | `snap finer`, `snap coarser`, `free-only` | In a mode: the snap step · free time only |
 | `cycle NAME`, `toggle NAME` | A param of the current view: step through its options, or flip it |
-| `set NAME=VALUE …` | Set the current view's params (all of them, or none if one doesn't fit) |
+| `set NAME=VALUE …` | Set the current view's params, or the session's `rail` and `zones` (all of them, or none if one doesn't fit) |
 | `toggle NAME=VALUE …` | Set them; again, put back what they were |
+| `overlay NAME` | Turn an overlay on or off |
+
+`bind` takes `help="…"` for what `?` says, when the command's own description won't do:
+`bind "z" "toggle zones=primary" help="Extra time zones"`.
+
+**Params and channels.** `set` and `toggle` change a view's params by name, which last per view.
+`rail` and `zones` are also channels you can set on any view, whatever it binds them to: they last
+for the session, across views, until toggled back (`set` them to the view's value to undo a `set`).
+
+## Overlays
+
+An overlay is a named bundle of settings, turned on and off over whichever view you're in:
+
+```kdl
+overlay "Travel" key="w" {
+    rail "travel"
+    zones "visible"
+}
+```
+
+Inside, each line sets a channel (`rail`, `zones`) or a param (checked against the view when you
+use it; a view without that param says so). `key=` binds it; `overlay "Travel"` from `:` or a
+`bind` does the same. Turning it on remembers what it changed; turning it off puts that back.
+Travel (`W`) is built in this way, in [`assets/keys.kdl`](../assets/keys.kdl): replace it by
+declaring your own `overlay "Travel"`.
 
 ## Example: a strain-first week
 

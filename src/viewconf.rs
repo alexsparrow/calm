@@ -40,6 +40,14 @@ impl Diag {
     }
 }
 
+/// `overlay "Travel" key="w" { rail "travel"; zones "visible" }`: settings that go on together,
+/// and off again, over whatever view you're in.
+#[derive(Clone, Debug)]
+pub struct Overlay {
+    pub name: String,
+    pub set: Vec<(String, String)>,
+}
+
 /// The effective configuration.
 #[derive(Clone)]
 pub struct Config {
@@ -55,6 +63,8 @@ pub struct Config {
     pub generated_names: Vec<String>,
     /// Keys outside any view: the built-ins with yours on top.
     pub keys: Keymap,
+    /// Named bundles of settings, toggled on whichever view you're in.
+    pub overlays: Vec<Overlay>,
     /// Worth knowing, but not wrong: the config still applies.
     pub warnings: Vec<Diag>,
 }
@@ -212,6 +222,9 @@ struct Loader {
     /// Views' own chords (file, line, col, view, chord), checked against the global keys.
     view_chords: Vec<(String, usize, usize, String, Chord)>,
     warnings: Vec<Diag>,
+    overlays: Vec<Overlay>,
+    /// Overlays named by `overlay NAME` commands (file, line, col, name), checked in `check_refs`.
+    overlay_refs: Vec<(String, usize, usize, String)>,
 }
 
 /// Where we are, for diagnostics.
@@ -397,11 +410,12 @@ impl Loader {
                     }
                 }
                 "keys" => self.keys_node(&at, node),
+                "overlay" => self.overlay_node(&at, node),
                 "order" => {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "keys", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "keys", "overlay", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
@@ -424,8 +438,8 @@ impl Loader {
         for child in Self::children(node) {
             match child.name().value() {
                 "bind" => {
-                    for (chord, command) in self.bind_node(at, child) {
-                        self.keys.bind(ctx, chord, command);
+                    for (chord, command, help) in self.bind_node(at, child) {
+                        self.keys.bind(ctx, chord, command, help);
                     }
                 }
                 "unbind" => {
@@ -447,16 +461,63 @@ impl Loader {
         }
     }
 
-    /// `bind "h" "left" "pan -1"`: keys, then the command.
-    fn bind_node(&mut self, at: &At, node: &KdlNode) -> Vec<(Chord, Command)> {
-        self.check_props(at, node, &[]);
+    /// `overlay "Travel" key="w" { rail "travel"; zones "visible" }`
+    fn overlay_node(&mut self, at: &At, node: &KdlNode) {
+        self.check_props(at, node, &["key"]);
+        let Some(name) = self.arg_str(at, node, 0, "a name") else { return };
+        let mut set = Vec::new();
+        for child in Self::children(node) {
+            let k = child.name().value().to_string();
+            let off = child.span().offset();
+            let v = match Self::arg(child, 0).map(|e| e.value()) {
+                Some(KdlValue::String(s)) => s.clone(),
+                Some(KdlValue::Bool(b)) => b.to_string(),
+                _ => {
+                    self.err(at, off, format!("`{k}` in an overlay takes a value: {k} \"…\""));
+                    continue;
+                }
+            };
+            // Channels are checked here; anything else is a param, checked against the view
+            // it's used in.
+            if let Some((_, values)) = CHANNELS.iter().find(|(c, _)| *c == k)
+                && !values.contains(&v.as_str())
+            {
+                self.err(at, off, format!("`{v}` isn't a {k}{}", suggest(&v, values)));
+                continue;
+            }
+            set.push((k, v));
+        }
+        if set.is_empty() {
+            return self.err(at, node.span().offset(), format!("overlay `{name}` sets nothing: give it settings, like {{ rail \"travel\" }}"));
+        }
+        if let Some(key) = self.str_prop(at, node, "key") {
+            match Chord::parse(&key) {
+                Ok(c) => self.keys.bind(Ctx::Normal, c, Command::Overlay(name.clone()), None),
+                Err(m) => self.err(at, node.span().offset(), m),
+            }
+        }
+        self.keys_text.push(node.to_string());
+        self.overlays.retain(|o| o.name != name);
+        self.overlays.push(Overlay { name, set });
+    }
+
+    /// `bind "h" "left" "pan -1" help="…"`: keys, then the command.
+    fn bind_node(&mut self, at: &At, node: &KdlNode) -> Vec<(Chord, Command, Option<String>)> {
+        self.check_props(at, node, &["help"]);
+        let help = self.str_prop(at, node, "help");
         let args: Vec<&KdlEntry> = node.entries().iter().filter(|e| e.name().is_none()).collect();
         let Some((last, keys)) = args.split_last().filter(|(_, k)| !k.is_empty()) else {
             self.err(at, node.span().offset(), "`bind` takes one or more keys, then a command: bind \"h\" \"left\" \"pan -1\"");
             return Vec::new();
         };
         let command = match last.value().as_string().map(Command::parse) {
-            Some(Ok(c)) => c,
+            Some(Ok(c)) => {
+                if let Command::Overlay(name) = &c {
+                    let (line, col) = at.pos(last.span().offset());
+                    self.overlay_refs.push((at.file.to_string(), line, col, name.clone()));
+                }
+                c
+            }
             Some(Err(m)) => {
                 self.err(at, last.span().offset(), m);
                 return Vec::new();
@@ -469,7 +530,7 @@ impl Loader {
         let mut out = Vec::new();
         for e in keys {
             match e.value().as_string().map(Chord::parse) {
-                Some(Ok(c)) => out.push((c, command.clone())),
+                Some(Ok(c)) => out.push((c, command.clone(), help.clone())),
                 Some(Err(m)) => self.err(at, e.span().offset(), m),
                 None => self.err(at, e.span().offset(), "a key should be a string"),
             }
@@ -728,6 +789,12 @@ impl Loader {
     /// Every source's calendar must be declared, once any calendars are.
     fn check_refs(&mut self) {
         self.apply_defaults();
+        for (file, line, col, name) in std::mem::take(&mut self.overlay_refs) {
+            if !self.overlays.iter().any(|o| o.name == name) {
+                let names: Vec<&str> = self.overlays.iter().map(|o| o.name.as_str()).collect();
+                self.diags.push(Diag { file, line, col, message: format!("no overlay named `{name}`{}", suggest(&name, &names)) });
+            }
+        }
         // A view's key over a global one is allowed (it's how a view takes a key over), but
         // worth a word in case it's a slip.
         for (file, line, col, view, chord) in std::mem::take(&mut self.view_chords) {
@@ -831,7 +898,7 @@ impl Loader {
         let mut settings_text = std::mem::take(&mut settings.text);
         settings_text.extend(self.keys_text);
         settings.text = settings_text;
-        Config { views, settings, view_text, templates, files: self.files, base_names, generated_names: Vec::new(), keys: self.keys, warnings: self.warnings }
+        Config { views, settings, view_text, templates, files: self.files, base_names, generated_names: Vec::new(), keys: self.keys, overlays: self.overlays, warnings: self.warnings }
     }
 
     // --- Node helpers ---------------------------------------------------------
@@ -1012,13 +1079,13 @@ impl Loader {
         let (mut mark, mut lod, mut lod_extent) = (None, Vec::new(), Extent::Time);
         let mut stops = Vec::new();
         let mut hours = (0., 1.);
-        let mut zones = ZoneAxes::All;
+        let mut zones = Ref::Lit("config".into());
         let mut params: Vec<Param> = Vec::new();
         let mut color = None;
         let mut day_span = Ref::Lit("false".into());
         let (mut rail, mut rail_style) = (Ref::Lit("off".into()), Ref::Lit("rail".into()));
         let mut all_day = true;
-        let mut view_keys: Vec<(Chord, Command, usize, usize)> = Vec::new();
+        let mut view_keys: Vec<(Chord, Command, Option<String>, usize, usize)> = Vec::new();
 
         for child in Self::children(node) {
             let off = child.span().offset();
@@ -1106,7 +1173,9 @@ impl Loader {
                 }
                 "zones" => {
                     self.check_props(at, child, &[]);
-                    zones = arg(0).and_then(|s| self.choice(at, off, "zones", &s, &[("all", ZoneAxes::All), ("primary", ZoneAxes::Primary)])).unwrap_or(zones);
+                    if let Some(s) = arg(0) {
+                        zones = Ref::parse(&s);
+                    }
                 }
                 "use" => {
                     self.check_props(at, child, &[]);
@@ -1146,8 +1215,8 @@ impl Loader {
                     for b in Self::children(child) {
                         if b.name().value() == "bind" {
                             let (line, col) = at.pos(b.span().offset());
-                            for (chord, command) in self.bind_node(at, b) {
-                                view_keys.push((chord, command, line, col));
+                            for (chord, command, help) in self.bind_node(at, b) {
+                                view_keys.push((chord, command, help, line, col));
                             }
                         } else {
                             self.err(at, b.span().offset(), format!("unknown node `{}` in a view's keys{}", b.name().value(), suggest(b.name().value(), &["bind"])));
@@ -1213,7 +1282,8 @@ impl Loader {
             ("color compose", &color.compose, Compose::NAMES),
             ("color palette", &color.palette, &["scale", "calendar", "true", "false"][..]),
             ("detail day-span", &day_span, &["true", "false"][..]),
-            ("rail show", &rail, &["off", "energy", "daylight", "zone"][..]),
+            ("rail show", &rail, &["off", "energy", "daylight", "zone", "travel"][..]),
+            ("zones", &zones, &["primary", "config", "visible", "all"][..]),
             ("rail style", &rail_style, &["rail", "strip"][..]),
         ] {
             match r {
@@ -1231,19 +1301,19 @@ impl Loader {
             match Chord::parse(k) {
                 Ok(chord) => {
                     chords.push((chord.clone(), vline, vcol));
-                    keys.push(Binding { chord, command: Command::Cycle(p.name.clone()) });
+                    keys.push(Binding { chord, command: Command::Cycle(p.name.clone()), help: None });
                 }
                 Err(m) => self.err(at, off, format!("param `{}`: {m}", p.name)),
             }
         }
-        for (chord, command, line, col) in view_keys {
+        for (chord, command, help, line, col) in view_keys {
             for p in command.params() {
-                if !names.contains(&p) {
+                if !names.contains(&p) && !CHANNELS.iter().any(|(c, _)| *c == p) {
                     self.diags.push(Diag { file: at.file.to_string(), line, col, message: format!("view `{name}` has no param `{p}`{}", suggest(p, &names)) });
                 }
             }
             chords.push((chord.clone(), line, col));
-            keys.push(Binding { chord, command });
+            keys.push(Binding { chord, command, help });
         }
         for (i, (c, line, col)) in chords.iter().enumerate() {
             if let Some(first) = keys[..i].iter().find(|b| b.chord == *c) {
@@ -1395,6 +1465,19 @@ mod tests {
         assert!(errors(r#"keys { unbind "F12"; }"#).contains("isn't bound"));
         assert!(errors(r#"keys "visual" { }"#).contains("keys context"));
         assert!(errors(r#"view "Grid" { keys { bind "x" "cycle nope"; } }"#).contains("no param `nope`"));
+
+        // Overlays: a name, settings, and perhaps a key.
+        let (c, diags) = load_config(r#"overlay "Calm" key="x" { rail "daylight"; zones "primary"; }"#);
+        assert!(diags.is_empty(), "{diags:?}");
+        let calm = c.overlays.iter().find(|o| o.name == "Calm").unwrap();
+        assert_eq!(calm.set, [("rail".to_string(), "daylight".to_string()), ("zones".to_string(), "primary".to_string())]);
+        assert_eq!(c.keys.lookup(Ctx::Normal, &press("x")), Some(&Command::Overlay("Calm".into())));
+        assert!(c.overlays.iter().any(|o| o.name == "Travel"));
+        assert!(errors(r#"overlay "Bad" { rail "dayligth"; }"#).contains("did you mean `daylight`"));
+        assert!(errors(r#"keys { bind "x" "overlay Nope"; }"#).contains("no overlay named `Nope`"));
+        // A view's keys may set session channels it has no param for.
+        let ok = errors(r#"view "Mine" { facet per-line=7 dir="rows" band=13; mark "block"; stops { stop "Week" cells=7; }; keys { bind "x" "toggle rail=travel"; } }"#);
+        assert!(ok.is_empty(), "{ok}");
     }
 
     #[test]

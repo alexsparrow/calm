@@ -37,13 +37,20 @@ keys {
 
     bind "e" "editor"
     bind "m" "menu"
-    bind "z" "zones"
-    bind "w" "travel"
+    bind "z" "toggle zones=primary" help="Extra time zones"
     bind "d" "theme"
     bind "escape" "close"
     bind "?" "help"
     bind "`" "stats"
     bind "S" "stress"
+}
+
+// Overlays: settings that go on together over whichever view you're in, and off again.
+// Travel: just your journeys beside each day (with their local times), and hour columns for
+// the zones you visit.
+overlay "Travel" key="w" {
+    rail "travel"
+    zones "visible"
 }
 
 // Scheduling (S): arrows move a cursor; Enter sets the start, then the end.
