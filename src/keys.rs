@@ -175,6 +175,8 @@ pub enum Command {
     /// `view next` / `view prev`.
     ViewStep(i32),
     Search,
+    /// Label the events in view, and select one by typing its label.
+    Pick,
     /// The `:` prompt: a date to go to, or a command.
     Prompt,
     /// The next or previous search match (`match next` / `match prev`).
@@ -243,6 +245,7 @@ const PLAIN: &[(&str, Command)] = &[
     ("today", Command::Today),
     ("full-day", Command::FullDay),
     ("search", Command::Search),
+    ("pick", Command::Pick),
     ("prompt", Command::Prompt),
     ("complete", Command::Complete),
     ("create", Command::Create),
@@ -265,7 +268,7 @@ const PLAIN: &[(&str, Command)] = &[
 
 /// Every command's first word, for suggestions.
 pub const NAMES: &[&str] = &[
-    "pan", "scroll", "zoom", "today", "full-day", "view", "search", "prompt", "match", "complete", "create", "adjust", "delete", "changes", "sync", "editor",
+    "pan", "scroll", "zoom", "today", "full-day", "view", "search", "pick", "prompt", "match", "complete", "create", "adjust", "delete", "changes", "sync", "editor",
     "menu", "theme", "help", "stats", "close", "stress", "step", "stretch", "place", "done", "back", "snap", "free-only", "cycle", "set",
     "toggle", "overlay",
 ];
@@ -374,6 +377,7 @@ impl Command {
             Command::Today => d(Around, "today", "Today"),
             Command::Search => d(Finding, "search", "Search (with: in: at: series: is:)"),
             Command::Match(_) => d(Finding, "match", "Next / previous match"),
+            Command::Pick => d(Finding, "pick", "Pick an event by its letters"),
             Command::Prompt => d(Finding, "prompt", "Go to a date (31, 12-31, dec, +2w), or a command"),
             Command::Complete => d(Typing, "complete", "Complete the facet"),
             Command::Create => d(Changing, "create", "Schedule an event"),

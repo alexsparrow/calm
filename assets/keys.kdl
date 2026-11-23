@@ -25,6 +25,7 @@ keys {
     bind "f" "full-day"
 
     bind "/" "search"
+    bind "p" "pick"
     bind "n" "match next"
     bind "N" "match prev"
     bind ":" "prompt"

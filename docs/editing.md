@@ -310,8 +310,10 @@ States on screen:
   something needs you.
 
 Not yet: a popover asking "this event or all events" when you move an instance of a series (it
-moves the instance), the "notify guests?" bar (moves use the drawer's notify setting), and
-picking an event from the keyboard.
+moves the instance) and the "notify guests?" bar (moves use the drawer's notify setting).
+
+To move an event without the mouse, pick it by its letters: `P` labels every event in view, typing
+a label selects that event, and in Adjust the arrows then move it (Shift resizes).
 
 ## For scripts and agents
 

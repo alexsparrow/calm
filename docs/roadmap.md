@@ -18,7 +18,7 @@ Done:
 Next, roughly in order:
 
 1. **Editing, the rest:** the "this event / all events" popover for recurring events, the
-   "notify guests?" prompt, picking events from the keyboard, undo of sent changes from the
+   "notify guests?" prompt, undo of sent changes from the
    history, then "this and following", replies to invitations, and all-day ↔ timed.
 2. **Calm notifications:** being told about events without being startled by them. calm
    decides when and what to say, and the desktop's notification daemon (Noctalia here)

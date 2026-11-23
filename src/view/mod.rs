@@ -12,6 +12,7 @@ mod arrange;
 mod chrome;
 mod commands;
 mod editing;
+mod hints;
 mod input;
 mod modes;
 mod search;
@@ -260,6 +261,9 @@ pub struct CalmView {
     hud_on: bool,
     mouse: Pt,
     hits: Vec<(usize, Hit)>,
+    /// Picking an event by its letters (`P`).
+    hints: Option<hints::Hints>,
+    pending_pick: Option<String>,
     /// `--hover` given: ignore real pointer moves.
     scripted_pointer: bool,
     hovered: Option<usize>,
@@ -436,6 +440,8 @@ params_open: opts.controls,
             hud_on: opts.bench,
             mouse: (-1., -1.),
             hits: Vec::new(),
+            hints: None,
+            pending_pick: opts.pick.clone(),
             hovered: None,
             hover_day: None,
             selected: None,
@@ -1145,6 +1151,11 @@ params_open: opts.controls,
 
     fn on_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
         let pos: Pt = (ev.position.x.into(), ev.position.y.into());
+        // A click gives up picking by letters.
+        if self.hints.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.over_chrome(pos) {
             return;
         }
@@ -1296,6 +1307,14 @@ impl Render for CalmView {
         self.sync_drawer(window, cx);
         self.sync_prompt(window, cx);
         self.refresh_search(cx);
+        if !self.hits.is_empty()
+            && let Some(typed) = self.pending_pick.take()
+        {
+            self.start_hints(cx);
+            for c in typed.chars() {
+                self.hint_key(&crate::keys::Press { key: c.to_string(), typed: Some(c.to_string()), ..Default::default() });
+            }
+        }
         let t0 = Instant::now();
         let size = window.viewport_size();
         let viewport = (f32::from(size.width), f32::from(size.height));
@@ -1437,6 +1456,7 @@ impl Render for CalmView {
             .children(self.editor_panel(cx))
             .children(self.menu_panel(cx))
             .children(self.mode_bar(cx))
+            .children(self.hints_layer())
             .children(self.prompt_panel(cx))
             .children(self.toast_card(cx))
             .children(self.changes_panel(cx))
@@ -1457,6 +1477,8 @@ pub struct Options {
     pub changes: bool,
     /// Open with the keyboard help showing (screenshots).
     pub help: bool,
+    /// `--pick LETTERS`: start picking by letters (for screenshots), with these typed ("" for none).
+    pub pick: Option<String>,
     /// Start with travel shown, as `W` does.
     pub travel: bool,
     /// Start in an editing mode: `new` or `adjust` (screenshots).
@@ -1501,6 +1523,7 @@ impl Options {
                 "--changes" => o.changes = true,
                 "--mode" => o.mode = args.next(),
                 "--help-card" => o.help = true,
+                "--pick" => o.pick = Some(args.next().unwrap_or_default()),
                 "--travel" => o.travel = true,
                 "--search" => o.search = args.next(),
                 "--jump" => o.jump = args.next(),

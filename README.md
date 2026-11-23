@@ -241,6 +241,7 @@ are now. See [Keys](docs/config.md#keys).
 | `T` | Today |
 | `/` | Search: type a title, or `with:` `in:` `at:` `series:` `is:`; ↑ ↓ through matches, Tab completes, Enter goes there, Esc goes back |
 | `n` `N` | Next / previous match, after a search |
+| `P` | Pick an event by keyboard: each one in view gets a few letters (as link hints do in Vimium); type them to select it, then `A` and the arrows move it |
 | `:` | Jump to a date: `:31`, `:12-31`, `:2027-03-04`, `:dec 24`, `:mon`, `:+2w`, `:today`; or run a command: `:set measure=demand`, `:view 3` |
 | Click | An event's details · zoom into an overview cell |
 

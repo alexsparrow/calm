@@ -60,6 +60,12 @@ impl CalmView {
     }
 
     pub(super) fn on_key(&mut self, ev: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        // Picking an event takes every key until it's done.
+        if self.hinting() {
+            self.hint_key(&press(&ev.keystroke));
+            cx.notify();
+            return;
+        }
         let ctx = self.key_ctx();
         if let Some(cmd) = self.command_for(ctx, &press(&ev.keystroke))
             && self.run(&cmd, cx)
@@ -91,6 +97,7 @@ impl CalmView {
                 self.set_preset((self.preset as i32 + d).rem_euclid(n) as usize);
             }
             Command::Search => self.open_prompt(Kind::Search),
+            Command::Pick => self.start_hints(cx),
             Command::Prompt => self.open_prompt(Kind::Jump),
             Command::Match(_) if self.prompt.is_some() => return self.prompt_command(cmd, cx),
             Command::Match(d) => return self.next_match(*d),

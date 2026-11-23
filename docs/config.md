@@ -221,6 +221,7 @@ params) lets the key through to the global one.
 | `today`, `full-day` | Go to today · full day / default hours |
 | `view 3`, `view next`, `view prev` | Switch view (by position, as the switcher orders them) |
 | `search`, `prompt` | Open `/` search · the `:` prompt |
+| `pick` | Label the events in view with letters; type one's letters to select it (Backspace takes one back, Esc gives up) |
 | `match next`, `match prev` | Step through search matches (selecting them; in the field, just moving) |
 | `complete` | Complete the search field's facet |
 | `create`, `adjust` | Schedule and Adjust modes |
