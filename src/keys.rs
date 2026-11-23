@@ -220,6 +220,9 @@ pub enum Command {
     Toggle(Vec<(String, String)>),
     /// A named toggle from config (`overlay "Travel" { rail "travel"; zones "visible" }`).
     Overlay(String),
+    /// Do Not Disturb: `dnd` flips it; `dnd on`, `dnd off`, `dnd 1h`, `dnd until 14:00`,
+    /// `dnd tomorrow`.
+    Dnd(Option<String>),
 }
 
 /// How the help card files a command: its section, and a row it shares with its opposite.
@@ -272,7 +275,7 @@ const PLAIN: &[(&str, Command)] = &[
 pub const NAMES: &[&str] = &[
     "pan", "scroll", "zoom", "today", "full-day", "view", "search", "pick", "prompt", "match", "complete", "create", "adjust", "delete", "changes", "sync", "editor",
     "menu", "theme", "help", "stats", "close", "stress", "step", "stretch", "place", "done", "back", "snap", "free-only", "cycle", "set",
-    "toggle", "overlay",
+    "toggle", "overlay", "dnd",
 ];
 
 fn sign(s: &str, neg: &[&str], pos: &[&str]) -> Option<i32> {
@@ -341,6 +344,11 @@ impl Command {
             }
             "cycle" => Command::Cycle(one("a param name")?.to_string()),
             "overlay" if !rest.is_empty() => Command::Overlay(rest.join(" ")),
+            "dnd" => match rest.join(" ") {
+                a if a.is_empty() => Command::Dnd(None),
+                a if matches!(a.as_str(), "on" | "off" | "tomorrow") || a.starts_with("until ") || a.chars().all(|c| c.is_ascii_digit() || c == 'h' || c == 'm') => Command::Dnd(Some(a)),
+                a => return Err(format!("`dnd` takes on, off, a length (30m, 2h), `until 14:00` or tomorrow, not `{a}`")),
+            },
             "overlay" => return Err("`overlay` takes an overlay's name".into()),
             "set" => Command::Set(assignments(rest)?),
             // `toggle span` flips a toggle param; `toggle a=b …` sets or restores.
@@ -407,6 +415,8 @@ impl Command {
             Command::Set(a) => Describe { group: Looking, row: "", text: format!("Set {}", show(a)) },
             Command::Toggle(a) => Describe { group: Looking, row: "", text: format!("Toggle {}", show(a)) },
             Command::Overlay(name) => Describe { group: Looking, row: "", text: name.clone() },
+            Command::Dnd(None) => d(Looking, "dnd", "Do not disturb"),
+            Command::Dnd(Some(a)) => Describe { group: Looking, row: "", text: format!("Do not disturb: {a}") },
         }
     }
 }
@@ -432,6 +442,7 @@ impl fmt::Display for Command {
             Command::Set(a) => format!("set {}", assign(a)),
             Command::Toggle(a) => format!("toggle {}", assign(a)),
             Command::Overlay(name) => format!("overlay {name}"),
+            Command::Dnd(a) => a.as_ref().map_or("dnd".into(), |a| format!("dnd {a}")),
             c => PLAIN.iter().find(|(_, p)| p == c).map(|(n, _)| n.to_string()).unwrap_or_default(),
         };
         f.write_str(&s)
@@ -571,6 +582,7 @@ const HEADS: &[(&str, &str)] = &[
     ("set", "Set settings: name=value"),
     ("toggle", "Set settings, or put them back"),
     ("overlay", "Turn an overlay on or off"),
+    ("dnd", "Do not disturb: on, off, 1h, until 14:00, tomorrow"),
 ];
 
 /// How well `typed` fits `word`: a prefix, then a part, then letters in order. Lower is
@@ -619,6 +631,10 @@ pub fn complete(text: &str, v: &Vocab) -> Vec<(String, String)> {
             plain(&mut options, &["next", "prev"]);
         }
         Some("overlay") => options.extend(v.overlays.iter().map(|n| (n.to_string(), String::new(), false))),
+        Some("dnd") => {
+            options.extend([("on", "Until you turn it off"), ("off", ""), ("30m", ""), ("1h", ""), ("2h", ""), ("tomorrow", "Until 8 am tomorrow")].map(|(w, what)| (w.to_string(), what.to_string(), false)));
+            options.push(("until".into(), "A time: until 14:00".into(), true));
+        }
         Some("cycle") => options.extend(v.settings.iter().map(|(n, vals)| (n.to_string(), vals.join(", "), false))),
         Some("set" | "toggle") => match last.split_once('=') {
             Some((name, _)) => {

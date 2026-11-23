@@ -134,6 +134,7 @@ impl CalmView {
             Command::Cycle(name) => return self.cycle_param(name, cx),
             Command::Set(a) => return self.set_params(a, cx),
             Command::Toggle(a) => return self.toggle(a, cx),
+            Command::Dnd(arg) => return self.set_dnd(arg.as_deref(), cx),
             Command::Overlay(name) => {
                 let Some(o) = self.conf.overlays.iter().find(|o| o.name == *name) else {
                     self.toast(format!("No overlay called \u{201c}{name}\u{201d}"), None, cx);
@@ -143,6 +144,30 @@ impl CalmView {
                 return self.toggle(&set, cx);
             }
         }
+        true
+    }
+
+    /// Do Not Disturb, shared with `calm dnd` and the agent through a file.
+    pub(super) fn set_dnd(&mut self, arg: Option<&str>, cx: &mut Context<Self>) -> bool {
+        use crate::notify::{Dnd, parse_until};
+        let now = chrono::Utc::now();
+        let want = match arg {
+            None => if self.dnd == Dnd::Off { Dnd::On(None) } else { Dnd::Off },
+            Some("on") => Dnd::On(None),
+            Some("off") => Dnd::Off,
+            Some(t) => match parse_until(t, now.with_timezone(&chrono::Local)) {
+                Some(until) => Dnd::On(Some(until)),
+                None => {
+                    self.toast(format!("Not a time I know: \u{201c}{t}\u{201d}"), None, cx);
+                    return false;
+                }
+            },
+        };
+        if let Err(e) = crate::notify::set_dnd(want) {
+            self.toast(format!("Couldn't change Do Not Disturb: {e}"), None, cx);
+            return false;
+        }
+        self.dnd = want;
         true
     }
 

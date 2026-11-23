@@ -20,21 +20,18 @@ Next, roughly in order:
 1. **Editing, the rest:** the "this event / all events" popover for recurring events, the
    "notify guests?" prompt, undo of sent changes from the
    history, then "this and following", replies to invitations, and all-day ↔ timed.
-2. **Calm notifications:** being told about events without being startled by them. calm
-   decides when and what to say, and the desktop's notification daemon (Noctalia here)
-   delivers it and applies its Do Not Disturb.
-   - **Ambient first:** `calm next --json` (the next event, minutes to go, what follows, whether
-     you're in a focus block) for status bars. A Noctalia scripted (Lua) widget in the repo shows
-     "Standup · 12m", getting a little stronger as it nears. The top bar's clock shows the same.
-   - **`calm agent`:** a user service that keeps the cache synced while the window is closed and
-     sends reminders. Later it can also say when changes are waiting for review.
-   - **One heads-up per event,** timed to what it needs: travel time for a place, about 2 min for
-     a video call, earlier for a demanding meeting in an energy dip. Worded as a transition
-     ("Wrap up — Standup in 5 min, then free until 2"). No repeats, no badges.
-   - **Silence by default** for all-day, tentative and declined events, free/busy calendars and
-     your own focus blocks; quiet hours and per-calendar settings in calm.kdl.
-   - **Later:** a morning summary in place of a stream of pings; holding everything but the
-     block's end during focus; notification rules once the rules engine exists.
+2. **Calm notifications.** Done: one heads-up per event through the desktop's notification
+   daemon, timed to what it needs (video 2 min, a place 15, demanding 10, else 5) and worded as a
+   transition ("Standup in 5 min · 9:30 – 9:45 am · then free until 12:30 pm"); silent for
+   all-day, tentative, cancelled, free and free/busy events and `notify=#false` calendars; quiet
+   hours; Do Not Disturb (`Q`, `:dnd 1h`, `calm dnd`) shown as a pill; `calm next [--json]` for
+   status bars; `calm agent` while the window's closed (one notifier at a time, by a lock).
+   Next:
+   - **A Noctalia widget** in the repo showing `calm next`, a little stronger as it nears.
+   - **`calm agent` keeps the cache synced** too, and says when changes are waiting for review.
+   - **Calmer still:** a morning summary in place of a stream of pings; holding all but the
+     block's end during focus; travel time from real places; notification rules once the rules
+     engine exists. Declined events need your response status from the sync first.
    - Turn off Noctalia's own calendar reminders, or you'll be told twice.
 3. **Travel and time zones** (`W`, the `zone` rail, or click a journey). Started: events whose start and end zones
    differ are moves between zones (Google's separate start and end zones, or `TZID`s in a

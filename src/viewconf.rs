@@ -158,6 +158,8 @@ pub struct Settings {
     pub theme_light: Option<String>,
     pub theme_dark: Option<String>,
     pub themes: Vec<crate::theme::ThemeDecl>,
+    /// `notify …`: reminder lead times and quiet hours.
+    pub notify: Option<crate::notify::Rules>,
     /// Each settings node's KDL, for `calm config dump`.
     text: Vec<String>,
 }
@@ -170,6 +172,8 @@ pub struct CalendarDecl {
     pub label: Option<String>,
     pub color: Option<String>,
     pub demand: Option<f32>,
+    /// `notify=#false`: no reminders for its events.
+    pub quiet: bool,
     /// Listed in the top-right menu rather than as a chip of its own.
     pub secondary: bool,
 }
@@ -410,12 +414,13 @@ impl Loader {
                     }
                 }
                 "keys" => self.keys_node(&at, node),
+                "notify" => self.notify_node(&at, node),
                 "overlay" => self.overlay_node(&at, node),
                 "order" => {
                     self.order = Some(node.entries().iter().filter_map(|e| e.value().as_string().map(str::to_string)).collect());
                 }
                 other => {
-                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "keys", "overlay", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
+                    let hint = suggest(other, &["view", "params", "include", "hide", "order", "keys", "overlay", "notify", "defaults", "zones", "source", "calendar", "energy", "location", "window", "theme", "colors", "sync", "default-calendar"]);
                     self.err(&at, node.span().offset(), format!("unknown top-level node `{other}`{hint}"));
                 }
             }
@@ -459,6 +464,29 @@ impl Loader {
                 other => self.err(at, child.span().offset(), format!("unknown node `{other}` in keys{}", suggest(other, &["bind", "unbind"]))),
             }
         }
+    }
+
+    /// `notify before="5m" place="15m" video="2m" demanding="10m" quiet="22:00-07:00"`
+    fn notify_node(&mut self, at: &At, node: &KdlNode) {
+        self.check_props(at, node, &["before", "place", "video", "demanding", "quiet"]);
+        let off = node.span().offset();
+        let mut rules = crate::notify::Rules::default();
+        for (key, slot) in [("before", &mut rules.before), ("place", &mut rules.place), ("video", &mut rules.video), ("demanding", &mut rules.demanding)] {
+            let Some(text) = self.str_prop(at, node, key) else { continue };
+            match text.strip_suffix('m').and_then(|n| n.parse::<i64>().ok()).or_else(|| text.strip_suffix('h').and_then(|n| n.parse::<i64>().ok()).map(|h| h * 60)) {
+                Some(m) if (0..=24 * 60).contains(&m) => *slot = m,
+                _ => self.err(at, off, format!("`{key}` should be minutes or hours, like \"5m\" or \"1h\", not `{text}`")),
+            }
+        }
+        if let Some(q) = self.str_prop(at, node, "quiet") {
+            let t = |s: &str| chrono::NaiveTime::parse_from_str(s.trim(), "%H:%M").ok();
+            match q.split_once('-').and_then(|(a, b)| Some((t(a)?, t(b)?))) {
+                Some(span) => rules.quiet = Some(span),
+                None => self.err(at, off, format!("`quiet` should be two times, like \"22:00-07:00\", not `{q}`")),
+            }
+        }
+        self.settings.notify = Some(rules);
+        self.settings.text.push(node.to_string());
     }
 
     /// `overlay "Travel" key="w" { rail "travel"; zones "visible" }`
@@ -574,7 +602,7 @@ impl Loader {
 
     /// `calendar "Work" color="sage" demand=0.6 label="Work"`
     fn calendar_node(&mut self, at: &At, node: &KdlNode) {
-        self.check_props(at, node, &["color", "demand", "label", "secondary"]);
+        self.check_props(at, node, &["color", "demand", "label", "secondary", "notify"]);
         let off = node.span().offset();
         let Some(name) = self.arg_str(at, node, 0, "a name") else { return };
         let color = self.str_prop(at, node, "color");
@@ -608,7 +636,15 @@ impl Loader {
             }
             None => false,
         };
-        self.calendars.push(CalendarDecl { name, label, color, demand, secondary });
+        let quiet = match Self::prop(node, "notify").map(|e| e.value()) {
+            Some(KdlValue::Bool(b)) => !*b,
+            Some(v) => {
+                self.err(at, off, format!("`notify` should be #true or #false, not {v}"));
+                return;
+            }
+            None => false,
+        };
+        self.calendars.push(CalendarDecl { name, label, color, demand, secondary, quiet });
     }
 
     /// `energy wake="7:00" sleep="23:00" peak="16:48" reactive=#true drain=0.3 recovery="60m" { at "9:00" 0.8 }`

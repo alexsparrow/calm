@@ -39,6 +39,7 @@ keys {
     bind "e" "editor"
     bind "m" "menu"
     bind "z" "toggle zones=primary" help="Extra time zones"
+    bind "q" "dnd" help="Do not disturb (quiet)"
     bind "d" "theme"
     bind "escape" "close"
     bind "?" "help"

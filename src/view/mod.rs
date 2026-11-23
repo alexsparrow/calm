@@ -264,6 +264,9 @@ pub struct CalmView {
     /// Picking an event by its letters (`P`).
     hints: Option<hints::Hints>,
     pending_pick: Option<String>,
+    /// Do Not Disturb, as last read (it's a file the agent and `calm dnd` share), and when.
+    dnd: crate::notify::Dnd,
+    dnd_read: Instant,
     /// `--hover` given: ignore real pointer moves.
     scripted_pointer: bool,
     hovered: Option<usize>,
@@ -341,6 +344,10 @@ impl CalmView {
             eprintln!("calm: {p}");
         }
         let live = !opts.demo && !opts.bench && !sources.is_empty();
+        // Reminders, while the window's open (`calm agent` does it while it's closed).
+        if live {
+            crate::notify::spawn();
+        }
         let data = if live {
             load_live(&sources, &calendars)
         } else {
@@ -442,6 +449,8 @@ params_open: opts.controls,
             hits: Vec::new(),
             hints: None,
             pending_pick: opts.pick.clone(),
+            dnd: crate::notify::dnd(chrono::Utc::now()),
+            dnd_read: Instant::now(),
             hovered: None,
             hover_day: None,
             selected: None,
@@ -1307,6 +1316,11 @@ impl Render for CalmView {
         self.sync_drawer(window, cx);
         self.sync_prompt(window, cx);
         self.refresh_search(cx);
+        // Do Not Disturb may change from outside (`calm dnd`, a status bar) or run out.
+        if self.dnd_read.elapsed() > Duration::from_secs(2) {
+            self.dnd = crate::notify::dnd(chrono::Utc::now());
+            self.dnd_read = Instant::now();
+        }
         if !self.hits.is_empty()
             && let Some(typed) = self.pending_pick.take()
         {
@@ -1914,7 +1928,7 @@ impl CalmView {
 
 /// The calendar list: the demo's for synthetic data or when nothing syncs, else as
 /// declared in calm.kdl, else derived from the sources.
-fn calendars_for(settings: &crate::viewconf::Settings, synthetic: bool) -> Vec<Calendar> {
+pub(crate) fn calendars_for(settings: &crate::viewconf::Settings, synthetic: bool) -> Vec<Calendar> {
     let wanted = crate::sync::wanted_calendars(settings.sources.as_deref());
     if synthetic || wanted.is_empty() {
         return model::demo_calendars();

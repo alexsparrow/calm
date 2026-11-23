@@ -1329,6 +1329,25 @@ impl CalmView {
                     }))
             }))
             .collect();
+        // Do Not Disturb: on, or for a while.
+        let dnd_on = self.dnd != crate::notify::Dnd::Off;
+        let dnd_rows: Vec<_> = [("menu-dnd", "Do not disturb", None, "Q"), ("menu-dnd-1h", "For an hour", Some("1h"), ""), ("menu-dnd-tomorrow", "Until tomorrow", Some("tomorrow"), "")]
+            .into_iter()
+            .map(|(id, label, arg, key)| {
+                let ticked = match arg {
+                    None => dnd_on,
+                    Some(_) => false,
+                };
+                row(id.into())
+                    .child(div().w(px(12.)).text_color(th.ink).child(if ticked { "\u{2713}" } else { "" }))
+                    .child(div().flex_1().when(arg.is_some(), |d| d.text_color(th.muted)).child(label))
+                    .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(key))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_dnd(arg, cx);
+                        cx.notify();
+                    }))
+            })
+            .collect();
         let action = |id: &'static str, label: &'static str, key: &'static str| {
             row(id.into()).child(div().flex_1().child(label)).child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(th.faint).child(key))
         };
@@ -1353,6 +1372,9 @@ impl CalmView {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(!secondary.is_empty(), |d| d.child(heading("More calendars")).children(calendars).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
                 .when(!overlay_rows.is_empty(), |d| d.child(heading("Overlays")).children(overlay_rows).child(div().my(px(4.)).h(px(1.)).bg(th.border)))
+                .child(heading("Notifications"))
+                .children(dnd_rows)
+                .child(div().my(px(4.)).h(px(1.)).bg(th.border))
                 .child(action("menu-new", "New event", "S").on_click(cx.listener(|this, _, _, cx| {
                     this.menu_on = false;
                     this.toggle_mode(true);
@@ -1392,10 +1414,17 @@ impl CalmView {
 }
 
 impl CalmView {
+    /// Do Not Disturb's pill, short: the moon says what it is.
+    fn dnd_pill(&self) -> Option<String> {
+        let long = crate::notify::describe_dnd(self.dnd, chrono::Utc::now())?;
+        Some(format!("\u{263e} {}", long.strip_prefix("Do not disturb until ").map_or(long.clone(), |t| format!("Quiet until {t}"))))
+    }
+
     /// What the pills say: each overlay that's on, then each loose session setting; or, in
     /// a narrow window with more than one, how many.
     fn pill_labels(&self) -> Vec<String> {
-        let mut labels = self.active_overlays();
+        let mut labels: Vec<String> = self.dnd_pill().into_iter().collect();
+        labels.extend(self.active_overlays());
         labels.extend(self.loose_settings().into_iter().map(|(k, v)| format!("{k}: {v}")));
         if labels.len() > 1 && self.viewport.0 < 900. {
             return vec![format!("{} on", labels.len())];
@@ -1410,7 +1439,8 @@ impl CalmView {
         let th = self.theme;
         let overlays = self.active_overlays();
         let loose = self.loose_settings();
-        let folded = overlays.len() + loose.len() > 1 && self.viewport.0 < 900.;
+        let dnd = self.dnd_pill();
+        let folded = overlays.len() + loose.len() + usize::from(dnd.is_some()) > 1 && self.viewport.0 < 900.;
         let pill = |id: String, label: String| {
             div()
                 .id(gpui::ElementId::Name(id.into()))
@@ -1430,14 +1460,23 @@ impl CalmView {
                 .child(label)
         };
         if folded {
-            let n = overlays.len() + loose.len();
+            let n = overlays.len() + loose.len() + usize::from(dnd.is_some());
             return vec![pill("pill-count".into(), format!("{n} on")).on_click(cx.listener(|this, _, _, cx| {
                 this.menu_on = true;
                 cx.notify();
             }))];
         }
         let close = || div().text_color(th.faint).child("\u{d7}");
-        let mut pills: Vec<_> = overlays
+        let mut pills: Vec<_> = dnd
+            .into_iter()
+            .map(|label| {
+                pill("pill-dnd".into(), label).child(close()).on_click(cx.listener(|this, _, _, cx| {
+                    this.set_dnd(Some("off"), cx);
+                    cx.notify();
+                }))
+            })
+            .collect();
+        pills.extend(overlays
             .into_iter()
             .map(|name| {
                 let cmd = crate::keys::Command::Overlay(name.clone());
@@ -1445,8 +1484,7 @@ impl CalmView {
                     this.run(&cmd, cx);
                     cx.notify();
                 }))
-            })
-            .collect();
+            }));
         pills.extend(loose.into_iter().map(|(k, v)| {
             pill(format!("pill-set-{k}"), format!("{k}: {v}")).child(close()).on_click(cx.listener(move |this, _, _, cx| {
                 this.clear_setting(&k);

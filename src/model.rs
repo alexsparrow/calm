@@ -81,7 +81,7 @@ pub fn resolve_calendars(declared: Option<&[crate::viewconf::CalendarDecl]>, wan
         }
     }
     let mut out: Vec<Calendar> = Vec::new();
-    for crate::viewconf::CalendarDecl { name, label, color, demand, secondary } in decls.into_iter().take(MAX_CALENDARS) {
+    for crate::viewconf::CalendarDecl { name, label, color, demand, secondary, .. } in decls.into_iter().take(MAX_CALENDARS) {
         // A declared calendar without its own colour keeps the one its source gives (Google's).
         let color = color.or_else(|| wanted.iter().find(|(n, _)| n.eq_ignore_ascii_case(&name)).and_then(|(_, c)| c.clone()));
         let demo = DEMO.iter().find(|d| d.0.eq_ignore_ascii_case(&name));

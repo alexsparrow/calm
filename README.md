@@ -68,6 +68,11 @@ changes your calendar by accident.
   window if you like.
 - **No accidental edits.** Clicks and drags only ever select. To change things you enter a mode,
   and every change goes through an outbox you can review before it's sent, with Undo.
+- **Reminders that don't startle.** One heads-up per event, timed to what it needs (two minutes
+  for a video call, fifteen to get somewhere, ten for something demanding) and worded as a
+  transition: "Standup in 5 min · 9:30 – 9:45 am · then free until 12:30 pm". All-day, tentative
+  and free/busy events stay silent. `Q` is Do Not Disturb (`:dnd 1h`, `:dnd until 14:00`), shared
+  with `calm dnd` for your status bar, and your desktop's own Do Not Disturb applies too.
 - **Clashes at a glance.** An event's details list what it overlaps: other meetings in red, and
   the all-day events it falls on (a trip, a holiday) in orange, since those aren't double
   bookings.
@@ -186,18 +191,16 @@ Some of what's coming has no equivalent in other calendars yet:
 - **Detail around now.** One view that shows today in full, this week as lists and the rest of
   the month as coloured days, coarsening smoothly into the past and future. It would be part of
   the grammar, not a separate mode.
-- **A command palette and a vim layer.** Remappable keys for everything, the `:` line growing into
-  a command line with fuzzy completion (`:view dial`, `:zoom year`), and counts and `gg`/`G`.
+- **More of the vim layer.** Counts and sequences (`3l`, `gg`/`G`), and a palette over the same
+  commands as `:`.
 
 - **Time where you'll be.** With travel known, a view can lay each day out in the zone you'll be
   in that day, with a seam where a journey jumps the clock, and switching between home and local
   time morphs the events. Then jet lag: your energy curve follows your body clock as it catches
   up with the new zone, about a day per hour of difference, so a 3 pm meeting that lands in your
   body's 3 am shows up as strain before you book the trip.
-- **Calm notifications.** Being told without being startled. Your status bar shows what's next
-  ("Standup · 12m"), and each event gets one gentle heads-up, timed to what it needs and worded
-  as a transition: "Wrap up — Standup in 5 min, then free until 2". All-day, tentative and focus
-  events stay silent.
+- **More from notifications.** A morning summary instead of a stream of pings, holding all but
+  a focus block's end while you're in it, and a status-bar widget for `calm next`.
 
 Closer to hand:
 
@@ -298,6 +301,7 @@ are now. See [Keys](docs/config.md#keys).
 | `C` · `B` · `V` | Colour measure · by calendar · composition (each view lists its own) |
 | `G` | Day-span glyph in overview cells |
 | `Z` | Extra time zones |
+| `Q` | Do not disturb: no reminders until you press it again (`:dnd 1h`, `:dnd until 14:00`, `:dnd tomorrow` for a while) |
 | `W` | Travel: journeys (events with different start and end zones) marked beside each day with their local times, plus hour columns for the zones you visit. It's an [overlay](docs/config.md#overlays), so you can make your own |
 | `D` | Light / dark (follows the system by default) |
 | `E` | Edit this view (and your energy settings) |
@@ -326,6 +330,10 @@ calm event delete <id>
 calm outbox                                         # what's staged, waiting or stuck
 calm commit --all                                   # asks at a terminal; --yes otherwise
 calm discard <n>
+
+calm next                                           # "Standup · 12m", for status bars; --json
+calm dnd 1h                                         # on, off, toggle, 30m, until 14:00, tomorrow
+calm agent                                          # reminders (and nothing else) while the window's closed
 
 calm config set Grid mark pill                      # the view editor's operations
 calm config duplicate Grid · calm config reset "Grid copy"

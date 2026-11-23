@@ -9,6 +9,7 @@ mod sync;
 mod text;
 mod theme;
 mod keys;
+mod notify;
 mod travel;
 mod zones;
 mod view;
@@ -35,6 +36,9 @@ fn main() {
         std::process::exit(sync::cli::run(&args));
     }
     // `calm travel`: the time-zone moves calm found in your events (with `travel` in calm.kdl).
+    if matches!(args.first().map(String::as_str), Some("next" | "dnd" | "agent")) {
+        std::process::exit(notify::cli(&args));
+    }
     if args.first().map(String::as_str) == Some("travel") {
         std::process::exit(travel::cli());
     }
