@@ -537,8 +537,12 @@ pub fn from_occurrences(
         let o = &s.occ;
         let calendar = calendar_of(&s.source);
         let people: People = {
+            // Not people: the event's own calendar, by ID or name. That's you (your address is
+            // your main calendar's ID) on the invitations it holds, and calendars that organise
+            // their own events, as Google says of shared and holiday ones.
+            let own: Vec<String> = s.source.rsplit('/').next().into_iter().chain(calendars.get(calendar).into_iter().flat_map(|c| [c.name.as_str(), c.display()])).map(str::to_lowercase).collect();
             let mut seen = std::collections::HashSet::new();
-            o.organizer.iter().chain(&o.attendees).filter(|p| seen.insert(p.to_lowercase())).map(|p| SharedString::from(p.clone())).collect()
+            o.organizer.iter().chain(&o.attendees).filter(|p| !own.contains(&p.to_lowercase()) && seen.insert(p.to_lowercase())).map(|p| SharedString::from(p.clone())).collect()
         };
         let event = |day: i32, start_min: f32, dur_min: f32| Event {
             title: SharedString::from(o.summary.clone()),

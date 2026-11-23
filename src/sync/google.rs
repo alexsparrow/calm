@@ -392,6 +392,8 @@ pub fn component(e: &Value, calendar_zone: Option<&str>, free_busy_only: bool) -
     let recurrence_id = series.and_then(|_| moment(&e["originalStartTime"], calendar_zone)).map(|m| m.instant());
     let text = |k: &str| e[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let people = |v: &Value| v["displayName"].as_str().or(v["email"].as_str()).map(str::to_string);
+    // A calendar organising its own events, or you organising yours, isn't someone you're with.
+    let organiser = |v: &Value| (v["self"] != true && !v["email"].as_str().is_some_and(|m| m.ends_with("calendar.google.com"))).then(|| people(v)).flatten();
     Some(Component {
         uid: series.or(e["id"].as_str())?.to_string(),
         recurrence_id,
@@ -402,8 +404,9 @@ pub fn component(e: &Value, calendar_zone: Option<&str>, free_busy_only: bool) -
         description: text("description"),
         status: e["status"].as_str().map(str::to_ascii_uppercase),
         transp: e["transparency"].as_str().map(str::to_ascii_uppercase),
-        organizer: people(&e["organizer"]),
-        attendees: e["attendees"].as_array().into_iter().flatten().filter_map(people).collect(),
+        organizer: organiser(&e["organizer"]),
+        // Rooms aren't guests.
+        attendees: e["attendees"].as_array().into_iter().flatten().filter(|a| a["resource"] != true).filter_map(people).collect(),
         categories: Vec::new(),
         start,
         duration,
