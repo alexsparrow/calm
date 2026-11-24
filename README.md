@@ -80,6 +80,33 @@ changes your calendar by accident.
   bookings.
 - **Live config.** One file, applied as you save it, with clear errors when something's wrong.
 
+## Today, and reminders
+
+![Today: a dial of the day, its radius your energy, beside an agenda of what's coming up](docs/images/today.png)
+
+**Today** (`6`) puts your day on a clock face: midnight at the top, noon at the bottom, and
+your energy as a shape that fills outward through the hours you're sharp and draws in at night.
+Events sit at their demand, so one beyond the curve (Strategy doc, above) is asking more than
+you'll have. Beside it, **Upcoming** lists what's next day by day, with what's over today
+dimmed. The two scroll together; move the dial to Thursday and the list starts there.
+
+Both are ordinary views in the grammar. Upcoming is a *packed* facet (each day only as tall as
+its events, empty days left out), and Today is a dial that *splits* off Upcoming:
+
+```kdl
+view "Today" {
+    coord "polar"; x "time-of-day"; y "demand"; mark "pill"
+    split "Upcoming" size=0.42          // scroll="own" to keep it on today
+}
+```
+
+**Reminders** are one heads-up per event, through your desktop's notifications: "Standup in
+5 min · 9:30 – 9:45 am · then free until 12:30 pm". They come earlier for a place (to get there)
+or something demanding, later for a video call, and never for all-day, tentative or free/busy
+events. `Q` is Do Not Disturb (`:dnd 1h`, `:dnd until 14:00`), shown as a pill while it's on.
+The app reminds you while it's open and `calm agent` while it isn't; `calm next` and `calm dnd`
+are there for your status bar.
+
 ## Search and jump
 
 <table>
@@ -283,7 +310,7 @@ are now. See [Keys](docs/config.md#keys).
 
 | | |
 |---|---|
-| `1`–`9`, `Tab` | Switch view |
+| `1`–`9`, `Tab` | Switch view (`6` is Today) |
 | Ctrl+scroll, `−` `=`, bottom right | Zoom: Day · Week · Month · Quarter · Year |
 | `←` `→` | Previous / next at the current zoom |
 | Scroll, Shift+scroll | Scroll hours (a day or week in view), otherwise time |
