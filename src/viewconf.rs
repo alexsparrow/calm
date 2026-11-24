@@ -1279,7 +1279,7 @@ impl Loader {
                 "param" => params.extend(self.param(at, child)),
                 "split" => {
                     // `split "Upcoming" size=0.4`: that view beside this one, on the right.
-                    self.check_props(at, child, &["size"]);
+                    self.check_props(at, child, &["size", "scroll"]);
                     let Some(name) = self.arg_str(at, child, 0, "the name of the view beside it") else { continue };
                     let size = self.num_prop(at, child, "size").unwrap_or(0.4) as f32;
                     if !(0.15..=0.7).contains(&size) {
@@ -1287,7 +1287,11 @@ impl Loader {
                     }
                     let (line, col) = at.pos(off);
                     self.split_refs.push((at.file.to_string(), line, col, name.clone()));
-                    split = Some(Split { name, size, view: None });
+                    let together = match self.str_prop(at, child, "scroll") {
+                        Some(s) => self.choice(at, off, "scroll", &s, &[("together", true), ("own", false)]).unwrap_or(true),
+                        None => true,
+                    };
+                    split = Some(Split { name, size, together, view: None });
                 }
                 "keys" => {
                     self.check_props(at, child, &[]);
@@ -1566,6 +1570,8 @@ mod tests {
         assert!(errors(&view(r#"split "Grid""#)).contains("needs `facet … pack=#true`"));
         assert!(errors(&view(r#"split "Upcomin""#)).contains("did you mean `Upcoming`"));
         assert!(errors(&view(r#"split "Upcoming" size=0.9"#)).contains("between 0.15 and 0.7"));
+        assert!(errors(&view(r#"split "Upcoming" scroll="own""#)).is_empty());
+        assert!(errors(&view(r#"split "Upcoming" scroll="sideways""#)).contains("scroll"));
         // A view's keys may set session channels it has no param for.
         let ok = errors(r#"view "Mine" { facet per-line=7 dir="rows" band=13; mark "block"; stops { stop "Week" cells=7; }; keys { bind "x" "toggle rail=travel"; } }"#);
         assert!(ok.is_empty(), "{ok}");

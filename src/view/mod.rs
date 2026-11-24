@@ -603,7 +603,14 @@ params_open: opts.controls,
         let full = self.side_width();
         // Just right of the plot, which narrows as it comes in: so it slides in from the edge.
         let left = x + w + 24.;
-        Some(Arr { plot: [left, y, (full - 24.).max(1.), h], facet: spec.facet, n: 14., start: self.side_start.x, days: DAYS, boxed: true, pack: self.side_pack.clone() })
+        // Together: from the first day the view shows. Its own: from where it's scrolled.
+        let start = if self.side_together() { self.lens().start.x } else { self.side_start.x };
+        Some(Arr { plot: [left, y, (full - 24.).max(1.), h], facet: spec.facet, n: 14., start, days: DAYS, boxed: true, pack: self.side_pack.clone() })
+    }
+
+    /// Whether the side view scrolls with this one (`split … scroll="together"`).
+    fn side_together(&self) -> bool {
+        self.spec().split.as_ref().is_none_or(|s| s.together)
     }
 
     /// Lays out the side view's list (when there is one), as `relayout` does the main one.
@@ -1312,12 +1319,22 @@ params_open: opts.controls,
         // Touchpad swipes are never perfectly straight: follow the dominant axis only,
         // so a vertical swipe doesn't also nudge the days (and then snap back).
         let (dx, dy) = if dy.abs() >= dx.abs() { (0., dy) } else { (dx, 0.) };
-        // Over the view beside: scroll its list.
+        // Over the view beside: scroll its list, and with it (if they go together) this view,
+        // which settles on a day once you stop.
         if let Some(arr) = self.side_arr().filter(|a| self.side_t.x > 0.5 && self.mouse.0 >= a.plot[0])
             && let Some(start) = arr.scrolled(-dy)
         {
-            self.side_start.target = start.max(0.);
-            self.side_start.x = self.side_start.target;
+            if self.side_together() {
+                let n = self.lens().zoom.target.exp2();
+                // No swipe bias (see `snap`): it settles on the day nearest the top.
+                let l = &mut self.lenses[self.preset];
+                l.start.target = start.clamp(0., (DAYS as f32 - n).max(0.));
+                l.start.x = l.start.target;
+                l.last_input = Some(Instant::now());
+            } else {
+                self.side_start.target = start.max(0.);
+                self.side_start.x = self.side_start.target;
+            }
             cx.notify();
             return;
         }

@@ -257,6 +257,9 @@ pub struct Split {
     pub name: String,
     /// Its share of the width.
     pub size: f32,
+    /// Scrolls with this view (it starts at the first day this one shows, and scrolling
+    /// either moves both), or on its own from today.
+    pub together: bool,
     /// The view itself, found once every view has loaded.
     pub view: Option<Box<Spec>>,
 }
