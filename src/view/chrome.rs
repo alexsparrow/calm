@@ -53,6 +53,15 @@ impl CalmView {
         let end = (l.start.target + n - 1.).round() as i32;
         let center = d.date((l.start.target + n * 0.5) as i32);
         let (a, b) = (d.date(start), d.date(end));
+        // A packed list runs on from where it starts.
+        if self.spec().facet.pack {
+            let from = match start - d.today {
+                0 => "From today".to_string(),
+                1 => "From tomorrow".to_string(),
+                _ => format!("From {}", a.format("%a %-d %b")),
+            };
+            return (self.spec().name.clone(), from);
+        }
         let range = |a: chrono::NaiveDate, b: chrono::NaiveDate| {
             if a.month() == b.month() {
                 format!("{}–{} {}", a.day(), b.day(), a.format("%b"))
@@ -942,6 +951,8 @@ impl CalmView {
             .left(px(zoom_x))
             // Level with the view picker (40 px tall, 18 px up).
             .bottom(px(21.))
+            // Nothing to choose between with one stop (a list, say).
+            .when(spec.stops.len() < 2, |d| d.invisible())
             .p(px(3.))
             .flex()
             .rounded_full()

@@ -1128,12 +1128,23 @@ impl Loader {
             let arg = |i| Self::arg(child, i).and_then(|e| e.value().as_string()).map(str::to_string);
             match child.name().value() {
                 "facet" => {
-                    self.check_props(at, child, &["per-line", "dir", "band"]);
+                    self.check_props(at, child, &["per-line", "dir", "band", "pack"]);
                     let per = self.num_prop(at, child, "per-line");
                     let dir = self.str_prop(at, child, "dir").and_then(|d| self.choice(at, off, "dir", &d, &[("rows", Dir::Rows), ("columns", Dir::Columns)]));
                     let band = self.num_prop(at, child, "band");
+                    let pack = match Self::prop(child, "pack").map(|e| e.value()) {
+                        Some(KdlValue::Bool(b)) => *b,
+                        Some(v) => {
+                            self.err(at, off, format!("`pack` should be #true or #false, not {v}"));
+                            false
+                        }
+                        None => false,
+                    };
+                    if pack && (per != Some(1.) || dir != Some(Dir::Rows)) {
+                        self.err(at, off, "`pack=#true` lays days out as a list: it needs per-line=1 and dir=\"rows\"");
+                    }
                     match (per, dir, band) {
-                        (Some(p), Some(d), Some(b)) if p >= 1. && b >= 1. => facet = Some(Facet { per_line: p as i32, dir: d, band: b as i32 }),
+                        (Some(p), Some(d), Some(b)) if p >= 1. && b >= 1. => facet = Some(Facet { per_line: p as i32, dir: d, band: b as i32, pack }),
                         _ => self.err(at, off, "`facet` needs per-line=N (≥1), dir=\"rows\"|\"columns\" and band=N (≥1)"),
                     }
                 }
@@ -1456,7 +1467,7 @@ mod tests {
         let (views, diags) = load_str("");
         assert!(diags.is_empty(), "{diags:?}");
         let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(names, ["Grid", "Lanes", "Energy", "Dial", "Density"]);
+        assert_eq!(names, ["Grid", "Lanes", "Energy", "Dial", "Density", "Upcoming"]);
     }
 
     fn load_config(src: &str) -> (Config, Vec<Diag>) {
@@ -1536,7 +1547,7 @@ mod tests {
         );
         assert!(diags.is_empty(), "{diags:?}");
         let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(names, ["Density", "Grid", "Lanes", "Energy"]);
+        assert_eq!(names, ["Density", "Grid", "Lanes", "Energy", "Upcoming"]);
         assert_eq!(views[1].stops.len(), 1);
     }
 

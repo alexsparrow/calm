@@ -264,6 +264,8 @@ pub struct CalmView {
     /// Picking an event by its letters (`P`).
     hints: Option<hints::Hints>,
     pending_pick: Option<String>,
+    /// A packed view's day offsets (see `Arr::pack`), from the last layout.
+    pack: Option<std::sync::Arc<[f32]>>,
     /// Do Not Disturb, as last read (it's a file the agent and `calm dnd` share), and when.
     dnd: crate::notify::Dnd,
     dnd_read: Instant,
@@ -449,6 +451,7 @@ params_open: opts.controls,
             hits: Vec::new(),
             hints: None,
             pending_pick: opts.pick.clone(),
+            pack: None,
             dnd: crate::notify::dnd(chrono::Utc::now()),
             dnd_read: Instant::now(),
             hovered: None,
@@ -555,7 +558,8 @@ params_open: opts.controls,
         let spec = &self.views[p];
         let (x, y, w, h) = self.plot();
         let (z, s) = if target { (l.zoom.target, l.start.target) } else { (l.zoom.x, l.start.x) };
-        Arr { plot: [x, y, w, h], facet: spec.facet, n: z.exp2(), start: s, days: DAYS, boxed: spec.x == Axis::None }
+        let pack = spec.facet.pack.then(|| self.pack.clone()).flatten();
+        Arr { plot: [x, y, w, h], facet: spec.facet, n: z.exp2(), start: s, days: DAYS, boxed: spec.x == Axis::None, pack }
     }
 
     /// The plot rectangle (x, y, w, h) inside the window.
@@ -610,6 +614,7 @@ params_open: opts.controls,
         let single = lines < 1.12;
         match (spec.coord, spec.facet.per_line, spec.facet.dir) {
             (Coord::Polar, _, _) => GUTTER_MIN,
+            _ if spec.facet.pack => GUTTER_MIN,
             // Weekday names beside the columns.
             (_, _, Dir::Columns) => 48.,
             // Calendar names, or the demand scale and "Your energy".
@@ -794,7 +799,11 @@ params_open: opts.controls,
 
     fn zoom_to_stop(&mut self, i: usize, center: Option<f32>) {
         let center = center.unwrap_or_else(|| self.center_target());
-        let (n, start) = self.aligned(i, center);
+        let (n, mut start) = self.aligned(i, center);
+        // A packed list starts at the day it's going to (today, a jump), not around it.
+        if self.spec().facet.pack {
+            start = center.floor();
+        }
         let l = &mut self.lenses[self.preset];
         l.zoom.target = n.log2();
         l.start.target = start;
@@ -849,7 +858,8 @@ params_open: opts.controls,
         if l.last_input.is_none() {
             l.gesture_from = Some(l.start.target);
         }
-        l.start.target = (l.start.target + px * arr.cells_per_px()).clamp(0., (DAYS as f32 - n).max(0.));
+        let next = arr.scrolled(px).unwrap_or(l.start.target + px * arr.cells_per_px());
+        l.start.target = next.clamp(0., (DAYS as f32 - n).max(0.));
         l.last_input = Some(Instant::now());
     }
 
@@ -943,10 +953,39 @@ params_open: opts.controls,
         let mark = self.lens().mark;
         let arr = self.arr();
         let mut targets = layout::solve(&self.data.events, &spec, mark, &self.hidden);
-        // A search dims what doesn't match.
+        // A packed list: each day as tall as its rows, empty days none (today always shows).
+        self.pack = spec.facet.pack.then(|| {
+            let mut rows = vec![0usize; DAYS as usize];
+            for (t, e) in targets.iter().zip(&self.data.events) {
+                if let layout::Kind::Row { rank } = t.kind
+                    && t.alpha > 0.01
+                    && let Some(r) = rows.get_mut(e.day as usize)
+                {
+                    *r = (*r).max(rank as usize + 1);
+                }
+            }
+            let today = self.data.today as usize;
+            let mut offs = Vec::with_capacity(rows.len() + 1);
+            let mut y = 0.;
+            for (d, &n) in rows.iter().enumerate() {
+                offs.push(y);
+                if n > 0 || d == today {
+                    y += arrange::PACK_HEAD + n.max(usize::from(d == today)) as f32 * arrange::PACK_ROW + arrange::PACK_GAP;
+                }
+            }
+            offs.push(y);
+            offs.into()
+        });
+        // A search dims what doesn't match; a list, what's over today.
+        let now = chrono::Local::now();
+        let now_min = (chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now)) as f32;
         for (i, t) in targets.iter_mut().enumerate() {
             if self.search_dims(i) {
                 t.alpha *= search::DIM;
+            }
+            let e = &self.data.events[i];
+            if spec.facet.pack && e.day == self.data.today && e.all_day.is_none() && e.start_min + e.dur_min <= now_min {
+                t.alpha *= 0.5;
             }
         }
         for (i, t) in targets.into_iter().enumerate() {

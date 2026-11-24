@@ -32,7 +32,12 @@ fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
     [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t), lerp(a[3], b[3], t)]
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Packed facets (an agenda): a day's heading, each event's row, and the gap after a day.
+pub const PACK_HEAD: f32 = 34.;
+pub const PACK_ROW: f32 = 30.;
+pub const PACK_GAP: f32 = 12.;
+
+#[derive(Clone, Debug)]
 pub struct Arr {
     /// Plot rectangle: x, y, w, h.
     pub plot: [f32; 4],
@@ -42,6 +47,9 @@ pub struct Arr {
     pub days: i32,
     /// Always draw cells as separate boxes (aggregate-only lenses).
     pub boxed: bool,
+    /// For a packed facet: where each day starts down the list, in pixels from the first,
+    /// and where the last ends (`days + 1` of them). Empty days take no room.
+    pub pack: Option<std::sync::Arc<[f32]>>,
 }
 
 impl Arr {
@@ -53,9 +61,32 @@ impl Arr {
         self.facet.band as f32
     }
 
-    /// Lines visible, at least one.
+    /// Lines visible, at least one. (A packed list is one long line.)
     pub fn lines(&self) -> f32 {
+        if self.pack.is_some() {
+            return 1.;
+        }
         (self.n / self.per()).max(1.)
+    }
+
+    /// A packed list's offset at a (fractional) day.
+    fn off(&self, offs: &[f32], d: f32) -> f32 {
+        let d = d.clamp(0., (offs.len() - 1) as f32);
+        let i = (d.floor() as usize).min(offs.len() - 2);
+        offs[i] + (offs[i + 1] - offs[i]) * (d - i as f32)
+    }
+
+    /// The (fractional) day at a packed list's offset: the inverse of `off`.
+    fn day_of(&self, offs: &[f32], o: f32) -> f32 {
+        let i = offs.partition_point(|&x| x <= o).saturating_sub(1).min(offs.len() - 2);
+        let h = offs[i + 1] - offs[i];
+        i as f32 + if h > 0. { ((o - offs[i]) / h).clamp(0., 1.) } else { 0. }
+    }
+
+    /// Where `start` would be after scrolling `px` down a packed list.
+    pub fn scrolled(&self, px: f32) -> Option<f32> {
+        let offs = self.pack.as_deref()?;
+        Some(self.day_of(offs, self.off(offs, self.start) + px))
     }
 
     /// Bands visible, at least one.
@@ -65,6 +96,9 @@ impl Arr {
 
     /// 0 for one continuous line, 1 once several lines read as separate boxes.
     pub fn boxness(&self) -> f32 {
+        if self.pack.is_some() {
+            return 0.;
+        }
         if self.boxed { 1. } else { smoothstep(1.12, 1.6, self.lines()) }
     }
 
@@ -116,6 +150,12 @@ impl Arr {
 
     /// The cell's screen rectangle (x0, y0, x1, y1), before insets.
     pub fn cell(&self, d: i32) -> Rect {
+        if let Some(offs) = self.pack.as_deref() {
+            let [x, y, w, _] = self.plot;
+            let i = (d.max(0) as usize).min(offs.len() - 2);
+            let top = y + offs[i] - self.off(offs, self.start);
+            return [x, top, x + w, top + offs[i + 1] - offs[i]];
+        }
         let (w1, w2) = self.weights();
         let mut mc = if w1 < 1. { self.strip(d as f32) } else { self.lines_mode(d) };
         if w1 > 0. && w1 < 1. {
@@ -141,6 +181,12 @@ impl Arr {
 
     /// A conservative range of days that may be on screen.
     pub fn visible(&self) -> Range<i32> {
+        if let Some(offs) = self.pack.as_deref() {
+            let o = self.off(offs, self.start);
+            let lo = offs.partition_point(|&x| x < o - 1.).saturating_sub(1);
+            let hi = offs.partition_point(|&x| x <= o + self.plot[3] + 1.);
+            return (lo as i32)..(hi as i32).min(self.days);
+        }
         let (p, b) = (self.per(), self.band());
         let (w1, w2) = self.weights();
         let mut lo = f32::MAX;

@@ -14,7 +14,7 @@ use gpui::{App, BorderStyle, BoxShadow, Bounds, ContentMask, Hsla, PathBuilder, 
 
 use super::CalmView;
 use super::Hit;
-use super::arrange::{Arr, Pt, Rect};
+use super::arrange::{Arr, PACK_HEAD, PACK_ROW, Pt, Rect};
 use crate::color::{self, ColorEnc, Measure};
 use crate::layout::{Kind, LabelMode, Target, U0, U1, V0, V1};
 use crate::model::{self, Status};
@@ -258,6 +258,11 @@ impl CalmView {
                     let top = inner.cell[1] - self.band_rows(p, t.day) as f32 * BAND_ROW - 3. + row as f32 * BAND_ROW;
                     Shape::Rect([x0, top, x1, top + BAND_ROW - 2.])
                 }
+            }
+            // A packed list (an agenda) has roomier rows, under the day's heading.
+            Kind::Row { rank } if arr.pack.is_some() => {
+                let y0 = cell[1] + PACK_HEAD + rank as f32 * PACK_ROW;
+                Shape::Rect([cell[0] + 3., y0, cell[2] - 3., y0 + PACK_ROW - 4.])
             }
             Kind::Row { rank } => {
                 let y0 = cell[1] + ROW_TOP + rank as f32 * ROW_H;
@@ -616,6 +621,30 @@ impl CalmView {
                         }
                     }
                 }
+                // An agenda row: when, what, and where.
+                LabelMode::Row if arr.pack.is_some() => {
+                    placed.push(i);
+                    if base < 0.02 {
+                        continue;
+                    }
+                    let clip = Some(b);
+                    let y = b[1] + (h - 15.) * 0.5;
+                    let when: SharedString = if e.all_day.is_some() { "All day".into() } else { fmt_range(e.start_min, e.end_min()).into() };
+                    let line = shape(window, when, &fonts.regular, 12.5, with_alpha(c.text, base * 0.7));
+                    frame.push(LABELS, Cmd::Line { line, at: (b[0] + 12., y), size: 12.5, clip });
+                    let tx = b[0] + 12. + 150.;
+                    if let Some((title, tw)) = fit(window, &e.title, &fonts.medium, 13., b[2] - tx - 12.) {
+                        let line = shape(window, title, &fonts.medium, 13., with_alpha(c.text, base));
+                        frame.push(LABELS, Cmd::Line { line, at: (tx, y - 0.5), size: 13., clip });
+                        n += 1;
+                        if let Some(loc) = &e.location
+                            && let Some((loc, _)) = fit(window, loc, &fonts.regular, 12.5, b[2] - tx - tw - 30.)
+                        {
+                            let line = shape(window, loc, &fonts.regular, 12.5, with_alpha(c.text, base * 0.55));
+                            frame.push(LABELS, Cmd::Line { line, at: (tx + tw + 14., y), size: 12.5, clip });
+                        }
+                    }
+                }
                 LabelMode::Row => {
                     if h < 9. || w < 34. {
                         continue;
@@ -971,7 +1000,7 @@ impl CalmView {
         }
 
         // Date labels inside boxes (aggregate cells carry their own).
-        let date_a = a * boxn * (1. - heat);
+        let date_a = a * if arr.pack.is_some() { 1. } else { boxn } * (1. - heat);
         if date_a > 0.01 && spec.coord == Coord::Cartesian {
             for &(d, _) in &vis {
                 let c = arr.cell_inset(d);
@@ -979,6 +1008,22 @@ impl CalmView {
                     continue;
                 }
                 let date = self.data.date(d);
+                // A packed list's day: a heading over its rows.
+                if arr.pack.is_some() {
+                    let long = date.format("%A %-d %B").to_string();
+                    let text = match d - today {
+                        0 => format!("Today \u{b7} {long}"),
+                        1 => format!("Tomorrow \u{b7} {long}"),
+                        _ => long,
+                    };
+                    let (font, color) = if d == today { (&fonts.semibold, th.now) } else { (&fonts.semibold, th.ink) };
+                    label(f, LABELS, text, font, 13., with_alpha(color, date_a), (c[0] + 12., c[1] + 10.), 0.);
+                    f.push(BACK, Cmd::Quad { b: [c[0] + 8., c[1] + 1., c[2] - 8., c[1] + 2.], r: 0., color: with_alpha(th.hairline, date_a), border: None });
+                    if d == today && !self.data.on_day(d).any(|k| self.marks.get(k).is_some_and(|m| matches!(m.target.kind, Kind::Row { .. }) && m.target.alpha > 0.01)) {
+                        label(f, LABELS, "Nothing today".to_string(), &fonts.regular, 12.5, with_alpha(th.faint, date_a), (c[0] + 24., c[1] + PACK_HEAD + 6.), 0.);
+                    }
+                    continue;
+                }
                 let first = date.day() == 1;
                 let text = match (spec.facet.per_line, first) {
                     (1, _) => format!("{} {}", DAY_NAMES[d.rem_euclid(7) as usize], date.day()),
@@ -1212,9 +1257,10 @@ impl CalmView {
                         f.push(BACK, Cmd::Stroke { pts: curve, closed: false, width: if boxn > 0.5 { 1.25 } else { 2. }, color: with_alpha(th.energy, 0.7 * ga) });
                     }
                 }
-                // Gutter: lanes or the demand scale for a single day.
+                // Gutter: lanes or the demand scale for a single day (not beside a list).
                 let single = ga * (1. - boxn);
                 if single > 0.01
+                    && arr.pack.is_none()
                     && let Some(&(d, _)) = vis.iter().find(|(_, c)| at_top(c))
                 {
                     let c = arr.cell_inset(d);

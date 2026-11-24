@@ -84,7 +84,7 @@ Required: `facet`, `mark`, and `stops` with at least one `stop`.
 
 | Node | Values | Meaning |
 |---|---|---|
-| `facet per-line=N dir=… band=N` | `dir`: `rows`, `columns` | How day cells tile the screen. Days wrap `per-line` to a line (7 = weeks, 1 = one day per line); lines stack in `dir`; every `band` lines start a new band beside (rows) or below (columns) the last. |
+| `facet per-line=N dir=… band=N pack=#false` | `dir`: `rows`, `columns` | How day cells tile the screen. Days wrap `per-line` to a line (7 = weeks, 1 = one day per line); lines stack in `dir`; every `band` lines start a new band beside (rows) or below (columns) the last. `pack=#true` (with `per-line=1 dir="rows"`) makes a list: each day as tall as its events, empty days left out (today stays, saying so if it's empty), headed "Today", "Tomorrow" and then the date, with `list` rows saying when, what and where. The built-in Upcoming view is this, with `x "none" y "none" mark "list"`: an agenda, as in Google Calendar's Schedule or Outlook's list. |
 | `coord "…"` | `cartesian` (default), `polar` | Coordinates inside each cell. Polar draws dials. |
 | `x "…"`, `y "…"` | `time-of-day`, `lane`, `calendar`, `demand`, `none` (default) | Axes inside a cell. `lane` is sub-columns for overlapping events. |
 | `collide "…"` | `split`, `highlight-conflict`, `overlay` (default) | Overlaps on the time axis: side by side, side by side and outlined, or drawn over each other. |

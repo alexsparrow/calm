@@ -146,3 +146,20 @@ view "Density" {
     color measure="$measure" split="$split" compose="$compose" palette="$split"
     detail day-span="$span"
 }
+
+// Upcoming: an agenda, as Google's Schedule and Outlook's list. A packed facet makes each day
+// as tall as its events and leaves out the empty ones; `list` rows say when, what and where.
+view "Upcoming" {
+    facet per-line=1 dir="rows" band=1 pack=#true
+    coord "cartesian"
+    x "none"
+    y "none"
+    collide "overlay"
+    mark "list"
+    stops {
+        stop "Upcoming" cells=14 align="cell"
+    }
+    zones "primary"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+}

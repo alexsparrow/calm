@@ -51,6 +51,9 @@ pub struct Facet {
     pub per_line: i32,
     pub dir: Dir,
     pub band: i32,
+    /// Days only as tall as their events, and empty days left out (today stays): an
+    /// agenda. One day per line, in rows.
+    pub pack: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
