@@ -37,8 +37,9 @@ changes your calendar by accident.
 - **A grammar of time.** Most calendars are a handful of fixed screens. In calm, every view is a
   small declarative spec: how days are arranged, what the axes mean, how overlaps resolve, and
   what mark each event becomes. Switching views *morphs* the same events from one layout to the
-  next. Grid, Lanes, Energy, Dial, Density and Upcoming (an agenda: what's next, day by day) are
-  built in, all written in the same KDL grammar;
+  next. Grid, Lanes, Energy, Dial, Density and Today (a dial of your day, its radius your
+  energy, split with an agenda of what's coming up) are built in, all written in the same KDL
+  grammar, splits and agendas included;
   press `E` to edit the one you're looking at, or write your own in `calm.kdl`. The idea is in
   [DESIGN.md](DESIGN.md).
 - **One continuous zoom** from a day to a year. Events stay events while there's room for them,

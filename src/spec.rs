@@ -247,6 +247,18 @@ pub struct Spec {
     /// Whether all-day events show: as bars above the time axis, rings inside dials,
     /// leading rows in lists, or stripes across aggregate cells.
     pub all_day: bool,
+    /// Another view beside this one, on the right (`split "Upcoming" size=0.4`).
+    pub split: Option<Split>,
+}
+
+/// A view shown beside another: for now, a packed list (an agenda).
+#[derive(Clone, Debug)]
+pub struct Split {
+    pub name: String,
+    /// Its share of the width.
+    pub size: f32,
+    /// The view itself, found once every view has loaded.
+    pub view: Option<Box<Spec>>,
 }
 
 /// Current param values for one view, by name.

@@ -266,6 +266,13 @@ pub struct CalmView {
     pending_pick: Option<String>,
     /// A packed view's day offsets (see `Arr::pack`), from the last layout.
     pack: Option<std::sync::Arc<[f32]>>,
+    /// The view beside the current one (`split`): the last one shown, so it can slide out;
+    /// how far it's in (0–1); where its list starts; its layout and day offsets.
+    side: Option<Box<Spec>>,
+    side_t: Spring,
+    side_start: Spring,
+    side_targets: Vec<layout::Target>,
+    side_pack: Option<std::sync::Arc<[f32]>>,
     /// Do Not Disturb, as last read (it's a file the agent and `calm dnd` share), and when.
     dnd: crate::notify::Dnd,
     dnd_read: Instant,
@@ -452,6 +459,11 @@ params_open: opts.controls,
             hints: None,
             pending_pick: opts.pick.clone(),
             pack: None,
+            side: None,
+            side_t: Spring::new(0.),
+            side_start: Spring::new(0.),
+            side_targets: Vec::new(),
+            side_pack: None,
             dnd: crate::notify::dnd(chrono::Utc::now()),
             dnd_read: Instant::now(),
             hovered: None,
@@ -567,7 +579,80 @@ params_open: opts.controls,
         let (vw, vh) = self.viewport;
         let (l, b) = (self.margin_l.x, self.margin_b.x);
         let t = self.margin_t.x;
-        (l, t, (vw - l - scene::MARGIN_R).max(200.), (vh - t - b).max(200.))
+        let w = (vw - l - scene::MARGIN_R).max(200.);
+        // Room for the view beside it, as it slides in.
+        let side = self.side_width() * self.side_t.x.clamp(0., 1.);
+        (l, t, (w - side).max(200.), (vh - t - b).max(200.))
+    }
+
+    /// The side view's width with the gap before it, when fully in.
+    fn side_width(&self) -> f32 {
+        let (vw, _) = self.viewport;
+        let w = (vw - self.margin_l.x - scene::MARGIN_R).max(200.);
+        self.side.as_ref().map_or(0., |_| (w * self.spec_split_size()).max(240.) + 24.)
+    }
+
+    fn spec_split_size(&self) -> f32 {
+        self.views.iter().filter_map(|v| v.split.as_ref()).find(|s| self.side.as_ref().is_some_and(|v| v.name == s.name)).map_or(0.4, |s| s.size)
+    }
+
+    /// The side view's arrangement: right of the plot, sliding in from the edge.
+    pub(super) fn side_arr(&self) -> Option<Arr> {
+        let spec = self.side.as_ref()?;
+        let (x, y, w, h) = self.plot();
+        let full = self.side_width();
+        // Just right of the plot, which narrows as it comes in: so it slides in from the edge.
+        let left = x + w + 24.;
+        Some(Arr { plot: [left, y, (full - 24.).max(1.), h], facet: spec.facet, n: 14., start: self.side_start.x, days: DAYS, boxed: true, pack: self.side_pack.clone() })
+    }
+
+    /// Lays out the side view's list (when there is one), as `relayout` does the main one.
+    fn relayout_side(&mut self) {
+        let Some(spec) = self.side.clone() else { return };
+        let mut targets = layout::solve(&self.data.events, &spec, spec.mark, &self.hidden);
+        self.dim_targets(&spec, &mut targets);
+        self.side_pack = Some(self.pack_offsets(&targets));
+        self.side_targets = targets;
+    }
+
+    /// A search dims what doesn't match; a list, what's over today.
+    fn dim_targets(&self, spec: &Spec, targets: &mut [layout::Target]) {
+        let now = chrono::Local::now();
+        let now_min = (chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now)) as f32;
+        for (i, t) in targets.iter_mut().enumerate() {
+            if self.search_dims(i) {
+                t.alpha *= search::DIM;
+            }
+            let e = &self.data.events[i];
+            if spec.facet.pack && e.day == self.data.today && e.all_day.is_none() && e.start_min + e.dur_min <= now_min {
+                t.alpha *= 0.5;
+            }
+        }
+    }
+
+    /// A packed list's day offsets: each day as tall as its rows, empty days none (today
+    /// always shows).
+    fn pack_offsets(&self, targets: &[layout::Target]) -> std::sync::Arc<[f32]> {
+        let mut rows = vec![0usize; DAYS as usize];
+        for (t, e) in targets.iter().zip(&self.data.events) {
+            if let layout::Kind::Row { rank } = t.kind
+                && t.alpha > 0.01
+                && let Some(r) = rows.get_mut(e.day as usize)
+            {
+                *r = (*r).max(rank as usize + 1);
+            }
+        }
+        let today = self.data.today as usize;
+        let mut offs = Vec::with_capacity(rows.len() + 1);
+        let mut y = 0.;
+        for (d, &n) in rows.iter().enumerate() {
+            offs.push(y);
+            if n > 0 || d == today {
+                y += arrange::PACK_HEAD + n.max(usize::from(d == today)) as f32 * arrange::PACK_ROW + arrange::PACK_GAP;
+            }
+        }
+        offs.push(y);
+        offs.into()
     }
 
     /// How view `p` labels its time axis: its `zones` channel, or the session's.
@@ -713,6 +798,13 @@ params_open: opts.controls,
             return;
         }
         self.preset = preset;
+        // A view with another beside it: that one slides in, its list from today.
+        if let Some(side) = self.views[preset].split.as_ref().and_then(|s| s.view.clone()) {
+            if self.side.as_ref().is_none_or(|s| s.name != side.name) || self.side_t.x < 0.01 {
+                self.side_start = Spring::new(self.data.today as f32);
+            }
+            self.side = Some(side);
+        }
         for (i, l) in self.layers.iter_mut().enumerate() {
             l.target = if i == preset { 1. } else { 0. };
         }
@@ -846,6 +938,7 @@ params_open: opts.controls,
     }
 
     fn go_today(&mut self) {
+        self.side_start.target = self.data.today as f32;
         let i = self.nearest_stop();
         self.zoom_to_stop(i, Some(self.data.today as f32 + 0.5));
     }
@@ -953,41 +1046,10 @@ params_open: opts.controls,
         let mark = self.lens().mark;
         let arr = self.arr();
         let mut targets = layout::solve(&self.data.events, &spec, mark, &self.hidden);
-        // A packed list: each day as tall as its rows, empty days none (today always shows).
-        self.pack = spec.facet.pack.then(|| {
-            let mut rows = vec![0usize; DAYS as usize];
-            for (t, e) in targets.iter().zip(&self.data.events) {
-                if let layout::Kind::Row { rank } = t.kind
-                    && t.alpha > 0.01
-                    && let Some(r) = rows.get_mut(e.day as usize)
-                {
-                    *r = (*r).max(rank as usize + 1);
-                }
-            }
-            let today = self.data.today as usize;
-            let mut offs = Vec::with_capacity(rows.len() + 1);
-            let mut y = 0.;
-            for (d, &n) in rows.iter().enumerate() {
-                offs.push(y);
-                if n > 0 || d == today {
-                    y += arrange::PACK_HEAD + n.max(usize::from(d == today)) as f32 * arrange::PACK_ROW + arrange::PACK_GAP;
-                }
-            }
-            offs.push(y);
-            offs.into()
-        });
-        // A search dims what doesn't match; a list, what's over today.
-        let now = chrono::Local::now();
-        let now_min = (chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now)) as f32;
-        for (i, t) in targets.iter_mut().enumerate() {
-            if self.search_dims(i) {
-                t.alpha *= search::DIM;
-            }
-            let e = &self.data.events[i];
-            if spec.facet.pack && e.day == self.data.today && e.all_day.is_none() && e.start_min + e.dur_min <= now_min {
-                t.alpha *= 0.5;
-            }
-        }
+        self.relayout_side();
+        self.dim_targets(&spec, &mut targets);
+        // A packed list: each day as tall as its rows.
+        self.pack = spec.facet.pack.then(|| self.pack_offsets(&targets));
         for (i, t) in targets.into_iter().enumerate() {
             // Stagger by screen position so a lens change reads as a wave.
             let delay = if self.stagger {
@@ -1116,6 +1178,9 @@ params_open: opts.controls,
         self.menu.target = if self.menu_on { 1. } else { 0. };
         self.detail_t.target = if self.detail() == Detail::DaySpan { 1. } else { 0. };
         self.margin_l.target = self.gutter_target();
+        self.side_t.target = if self.spec().split.as_ref().is_some_and(|s| s.view.is_some()) { 1. } else { 0. };
+        moving |= self.side_t.step(dt, GENTLE);
+        moving |= self.side_start.step(dt, VIEWPORT);
         // A row of hour labels per extra zone above a horizontal time axis.
         let rows = if self.spec().x == Axis::TimeOfDay { self.shown_zones().len() } else { 0 };
         // Room for the mode bar under the top bar while you're in a mode.
@@ -1247,6 +1312,15 @@ params_open: opts.controls,
         // Touchpad swipes are never perfectly straight: follow the dominant axis only,
         // so a vertical swipe doesn't also nudge the days (and then snap back).
         let (dx, dy) = if dy.abs() >= dx.abs() { (0., dy) } else { (dx, 0.) };
+        // Over the view beside: scroll its list.
+        if let Some(arr) = self.side_arr().filter(|a| self.side_t.x > 0.5 && self.mouse.0 >= a.plot[0])
+            && let Some(start) = arr.scrolled(-dy)
+        {
+            self.side_start.target = start.max(0.);
+            self.side_start.x = self.side_start.target;
+            cx.notify();
+            return;
+        }
         if ev.modifiers.control || ev.modifiers.platform {
             // Semantic zoom around the pointer.
             self.zoom_by(-dy * 0.006, Some(self.mouse));
@@ -1829,6 +1903,9 @@ impl CalmView {
         self.conf = config.clone();
         self.views = config.views;
         (self.lenses, self.values, self.layers) = (lenses, values, layers);
+        if let Some(side) = self.views[self.preset].split.as_ref().and_then(|s| s.view.clone()) {
+            self.side = Some(side);
+        }
         self.dirty = true;
         self.stagger = true;
     }

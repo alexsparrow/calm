@@ -515,6 +515,7 @@ impl CalmView {
             self.marks[i].shown = Some(s);
             self.drawn_marks.push(i);
         }
+        self.side_pane(window, &mut frame, &mut hits);
         self.hits = hits;
 
         let (n_labels, placed) = if skip("labels") { (0, Vec::new()) } else { self.labels(p, &arr, &boxes, window, &mut frame) };
@@ -1655,4 +1656,93 @@ fn all_day_ring(r_in: f32, row: u16) -> (f32, f32) {
     let thick = (r_in * 0.16).clamp(6., 16.);
     let r = r_in - 3. - thick * 0.5 - row as f32 * (thick + 2.);
     (r.max(thick), thick)
+}
+
+impl CalmView {
+    /// The view beside the current one (`split`): a list, drawn as it stands (no morphing),
+    /// sliding in from the right. Its rows are hit like any other event.
+    fn side_pane(&self, window: &Window, frame: &mut Frame, hits: &mut Vec<(usize, Hit)>) {
+        let a = self.side_t.x.clamp(0., 1.);
+        let Some(arr) = self.side_arr().filter(|_| a > 0.01) else { return };
+        let (th, fonts) = (self.theme, &self.fonts);
+        let [x, y, w, h] = arr.plot;
+        let clip = [x - 4., y, x + w + 4., y + h];
+        let inside = |r: &Rect| r[3] > clip[1] && r[1] < clip[3];
+        let today = self.data.today;
+        // Room for the longest times, so titles line up.
+        let time_w = text::width(window, &SharedString::from("12:30 \u{2013} 12:45 pm"), &fonts.regular, 12.5) + 16.;
+        // A quiet divider from the view it's beside.
+        frame.push(FREE, Cmd::Quad { b: [x - 13., y + 4., x - 12., y + h - 4.], r: 0., color: with_alpha(th.hairline, 1.5 * a), border: None });
+        for d in arr.visible() {
+            let c = arr.cell(d);
+            if c[3] - c[1] < 1. || !inside(&c) {
+                continue;
+            }
+            // The day's heading.
+            let date = self.data.date(d);
+            let long = date.format("%A %-d %B").to_string();
+            let text = match d - today {
+                0 => format!("Today \u{b7} {long}"),
+                1 => format!("Tomorrow \u{b7} {long}"),
+                _ => long,
+            };
+            if c[1] + 10. >= clip[1] - 4. {
+                let line = shape(window, text.into(), &fonts.semibold, 13., with_alpha(if d == today { th.now } else { th.ink }, a));
+                frame.push(FREE, Cmd::Line { line, at: (c[0] + 4., c[1] + 10.), size: 13., clip: Some(clip) });
+            }
+            let mut any = false;
+            for i in self.data.on_day(d) {
+                let Some(t) = self.side_targets.get(i) else { continue };
+                let Kind::Row { rank } = t.kind else { continue };
+                if t.alpha < 0.01 {
+                    continue;
+                }
+                any = true;
+                let r0 = c[1] + PACK_HEAD + rank as f32 * PACK_ROW;
+                let r = [c[0], r0, c[2], r0 + PACK_ROW - 4.];
+                if !inside(&r) {
+                    continue;
+                }
+                let e = &self.data.events[i];
+                let col = self.mark_colors(e);
+                let alpha = t.alpha * a;
+                let lit = if self.hovered == Some(i) { 1.15 } else { 1. };
+                let tentative = e.status == model::Status::Tentative;
+                let shown = [r[0], r[1].max(clip[1]), r[2], r[3].min(clip[3])];
+                let border = if self.selected == Some(i) {
+                    Some((with_alpha(col.edge, alpha), 1.5, false))
+                } else if tentative {
+                    Some((with_alpha(col.edge, 0.7 * alpha), 1., true))
+                } else {
+                    None
+                };
+                frame.push(FREE, Cmd::Quad { b: shown, r: 4., color: with_alpha(col.fill, if tentative { 0.35 } else { (col.fill.a * lit).min(1.) } * alpha), border });
+                if !tentative {
+                    frame.push(FREE, Cmd::Quad { b: [shown[0], shown[1], shown[0] + 3., shown[3]], r: 1.5, color: with_alpha(col.edge, alpha), border: None });
+                }
+                hits.push((i, Hit::Rect(shown)));
+                // When, what, where.
+                let row_clip = Some([shown[0], shown[1], shown[2] - 6., shown[3]]);
+                let ty = r[1] + (PACK_ROW - 4. - 15.) * 0.5;
+                let when: SharedString = if e.all_day.is_some() { "All day".into() } else { fmt_range(e.start_min, e.end_min()).into() };
+                let line = shape(window, when, &fonts.regular, 12.5, with_alpha(col.text, alpha * 0.7));
+                frame.push(FREE, Cmd::Line { line, at: (r[0] + 12., ty), size: 12.5, clip: row_clip });
+                let tx = r[0] + 12. + time_w;
+                if let Some((title, tw)) = text::fit(window, &e.title, &fonts.medium, 13., r[2] - tx - 10.) {
+                    let line = shape(window, title, &fonts.medium, 13., with_alpha(col.text, alpha));
+                    frame.push(FREE, Cmd::Line { line, at: (tx, ty - 0.5), size: 13., clip: row_clip });
+                    if let Some(loc) = &e.location
+                        && let Some((loc, _)) = text::fit(window, loc, &fonts.regular, 12.5, r[2] - tx - tw - 24.)
+                    {
+                        let line = shape(window, loc, &fonts.regular, 12.5, with_alpha(col.text, alpha * 0.55));
+                        frame.push(FREE, Cmd::Line { line, at: (tx + tw + 12., ty), size: 12.5, clip: row_clip });
+                    }
+                }
+            }
+            if d == today && !any {
+                let line = shape(window, "Nothing today".into(), &fonts.regular, 12.5, with_alpha(th.faint, a));
+                frame.push(FREE, Cmd::Line { line, at: (c[0] + 16., c[1] + PACK_HEAD + 6.), size: 12.5, clip: Some(clip) });
+            }
+        }
+    }
 }

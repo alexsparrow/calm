@@ -229,6 +229,8 @@ struct Loader {
     overlays: Vec<Overlay>,
     /// Overlays named by `overlay NAME` commands (file, line, col, name), checked in `check_refs`.
     overlay_refs: Vec<(String, usize, usize, String)>,
+    /// Views named by `split` (file, line, col, name), checked in `check_refs`.
+    split_refs: Vec<(String, usize, usize, String)>,
 }
 
 /// Where we are, for diagnostics.
@@ -825,6 +827,19 @@ impl Loader {
     /// Every source's calendar must be declared, once any calendars are.
     fn check_refs(&mut self) {
         self.apply_defaults();
+        // A split names a view (hidden ones too), which for now must be a packed list.
+        for (file, line, col, name) in std::mem::take(&mut self.split_refs) {
+            let message = match self.views.iter().find(|(v, _)| v.name == name) {
+                None => {
+                    let names: Vec<&str> = self.views.iter().map(|(v, _)| v.name.as_str()).collect();
+                    format!("`split` names no view `{name}`{}", suggest(&name, &names))
+                }
+                Some((v, _)) if !v.facet.pack => format!("`split \"{name}\"`: the view beside another is drawn as a list, so it needs `facet … pack=#true` (like Upcoming)"),
+                Some((v, _)) if v.split.is_some() => format!("`split \"{name}\"`: that view has a split of its own"),
+                _ => continue,
+            };
+            self.diags.push(Diag { file, line, col, message });
+        }
         for (file, line, col, name) in std::mem::take(&mut self.overlay_refs) {
             if !self.overlays.iter().any(|o| o.name == name) {
                 let names: Vec<&str> = self.overlays.iter().map(|o| o.name.as_str()).collect();
@@ -917,7 +932,14 @@ impl Loader {
     }
 
     fn finish(self) -> Config {
+        // Splits take their side view whether or not it's in the switcher.
+        let all: Vec<Spec> = self.views.iter().map(|(v, _)| v.clone()).collect();
         let mut views: Vec<(Spec, String)> = self.views.into_iter().filter(|(v, _)| !self.hidden.contains(&v.name)).collect();
+        for (v, _) in &mut views {
+            if let Some(s) = &mut v.split {
+                s.view = all.iter().find(|o| o.name == s.name && o.facet.pack && o.split.is_none()).map(|o| Box::new(o.clone()));
+            }
+        }
         if let Some(order) = &self.order {
             views.sort_by_key(|(v, _)| order.iter().position(|n| *n == v.name).unwrap_or(usize::MAX));
         }
@@ -1122,6 +1144,7 @@ impl Loader {
         let (mut rail, mut rail_style) = (Ref::Lit("off".into()), Ref::Lit("rail".into()));
         let mut all_day = true;
         let mut view_keys: Vec<(Chord, Command, Option<String>, usize, usize)> = Vec::new();
+        let mut split = None;
 
         for child in Self::children(node) {
             let off = child.span().offset();
@@ -1254,6 +1277,18 @@ impl Loader {
                     params.extend(tparams);
                 }
                 "param" => params.extend(self.param(at, child)),
+                "split" => {
+                    // `split "Upcoming" size=0.4`: that view beside this one, on the right.
+                    self.check_props(at, child, &["size"]);
+                    let Some(name) = self.arg_str(at, child, 0, "the name of the view beside it") else { continue };
+                    let size = self.num_prop(at, child, "size").unwrap_or(0.4) as f32;
+                    if !(0.15..=0.7).contains(&size) {
+                        self.err(at, off, "`size` is the side view's share of the width: between 0.15 and 0.7");
+                    }
+                    let (line, col) = at.pos(off);
+                    self.split_refs.push((at.file.to_string(), line, col, name.clone()));
+                    split = Some(Split { name, size, view: None });
+                }
                 "keys" => {
                     self.check_props(at, child, &[]);
                     if Self::arg(child, 0).is_some() {
@@ -1305,7 +1340,7 @@ impl Loader {
                     }
                 }
                 other => {
-                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "keys", "color", "detail", "rail", "all-day"];
+                    let known = ["facet", "coord", "x", "y", "collide", "mark", "stops", "hours", "zones", "use", "param", "keys", "split", "color", "detail", "rail", "all-day"];
                     self.err(at, off, format!("unknown node `{other}` in view{}", suggest(other, &known)));
                 }
             }
@@ -1374,7 +1409,7 @@ impl Loader {
         if self.diags.len() > errors_before {
             return None;
         }
-        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, keys, color, day_span, rail, rail_style, all_day })
+        Some(Spec { name, facet: facet?, coord, x, y, collide, mark: mark?, lod, lod_extent, stops, hours, zones, params, keys, color, day_span, rail, rail_style, all_day, split })
     }
 }
 
@@ -1467,7 +1502,10 @@ mod tests {
         let (views, diags) = load_str("");
         assert!(diags.is_empty(), "{diags:?}");
         let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(names, ["Grid", "Lanes", "Energy", "Dial", "Density", "Upcoming"]);
+        assert_eq!(names, ["Grid", "Lanes", "Energy", "Dial", "Density", "Today"]);
+        // Today's side is Upcoming, though Upcoming isn't in the switcher.
+        let today = views.iter().find(|v| v.name == "Today").unwrap();
+        assert_eq!(today.split.as_ref().and_then(|s| s.view.as_ref()).map(|v| v.name.as_str()), Some("Upcoming"));
     }
 
     fn load_config(src: &str) -> (Config, Vec<Diag>) {
@@ -1522,6 +1560,12 @@ mod tests {
         assert!(c.overlays.iter().any(|o| o.name == "Travel"));
         assert!(errors(r#"overlay "Bad" { rail "dayligth"; }"#).contains("did you mean `daylight`"));
         assert!(errors(r#"keys { bind "x" "overlay Nope"; }"#).contains("no overlay named `Nope`"));
+        // A split names a packed view, hidden or not.
+        let view = |extra: &str| format!(r#"view "Mine" {{ facet per-line=1 dir="rows" band=1; mark "block"; stops {{ stop "Day" cells=1; }}; {extra} }}"#);
+        assert!(errors(&view(r#"split "Upcoming" size=0.4"#)).is_empty());
+        assert!(errors(&view(r#"split "Grid""#)).contains("needs `facet … pack=#true`"));
+        assert!(errors(&view(r#"split "Upcomin""#)).contains("did you mean `Upcoming`"));
+        assert!(errors(&view(r#"split "Upcoming" size=0.9"#)).contains("between 0.15 and 0.7"));
         // A view's keys may set session channels it has no param for.
         let ok = errors(r#"view "Mine" { facet per-line=7 dir="rows" band=13; mark "block"; stops { stop "Week" cells=7; }; keys { bind "x" "toggle rail=travel"; } }"#);
         assert!(ok.is_empty(), "{ok}");
@@ -1547,7 +1591,7 @@ mod tests {
         );
         assert!(diags.is_empty(), "{diags:?}");
         let names: Vec<_> = views.iter().map(|v| v.name.as_str()).collect();
-        assert_eq!(names, ["Density", "Grid", "Lanes", "Energy", "Upcoming"]);
+        assert_eq!(names, ["Density", "Grid", "Lanes", "Energy", "Today"]);
         assert_eq!(views[1].stops.len(), 1);
     }
 

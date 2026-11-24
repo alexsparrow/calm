@@ -163,3 +163,24 @@ view "Upcoming" {
     use "colour"
     color measure="$measure" split="$split" compose="$compose" palette="$split"
 }
+
+// Today: your day as a dial, its radius your energy (events sit at their demand, so one far
+// from the curve is asking more than you'll have), with what's coming up beside it.
+view "Today" {
+    facet per-line=1 dir="rows" band=1
+    coord "polar"
+    x "time-of-day"
+    y "demand"
+    collide "overlay"
+    mark "pill"
+    stops {
+        stop "Day" cells=1 align="cell"
+    }
+    zones "primary"
+    use "colour"
+    color measure="$measure" split="$split" compose="$compose" palette="$split"
+    split "Upcoming" size=0.42
+}
+
+// Upcoming is here as Today's side; take this out to have it in the switcher too.
+hide "Upcoming"
