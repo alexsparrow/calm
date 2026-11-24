@@ -1384,7 +1384,8 @@ impl CalmView {
                     }
                 }
                 if spec.y == Axis::Demand {
-                    // Personal energy as a radial area, from the curve out to the rim, as in the straight view.
+                    // Personal energy as a radial area, from the middle out to the curve: further
+                    // out is more (see `Inner::outward`), so the day's energy bulges outward.
                     let k = 144;
                     let curve: Vec<Pt> = (0..=k)
                         .map(|j| {
@@ -1395,7 +1396,7 @@ impl CalmView {
                         })
                         .collect();
                     let mut pts = curve.clone();
-                    pts.extend((0..=k).rev().map(|j| polar(r_out, inner.angle(j as f32 / k as f32))));
+                    pts.extend((0..=k).rev().map(|j| polar(r_in, inner.angle(j as f32 / k as f32))));
                     f.push(BACK, Cmd::Strip { pts, color: with_alpha(th.energy, if th.dark { 0.10 } else { 0.13 } * a) });
                     f.push(BACK, Cmd::Stroke { pts: curve, closed: true, width: 1.5, color: with_alpha(th.energy, 0.7 * ga) });
                 }

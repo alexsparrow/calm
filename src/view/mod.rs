@@ -753,7 +753,7 @@ params_open: opts.controls,
             (_, Axis::TimeOfDay) => ((0., 1.), hours),
             _ => ((0., 1.), (0., 1.)),
         };
-        Inner { cell, coord: spec.coord, xr, yr }
+        Inner { cell, coord: spec.coord, xr, yr, outward: spec.coord == Coord::Polar && spec.y == Axis::Demand }
     }
 
     /// Whether the current lens shows aggregates (so colour means a reduction over a day).

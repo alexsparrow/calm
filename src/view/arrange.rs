@@ -243,6 +243,10 @@ pub struct Inner {
     /// Inner x and y ranges (fractions of the axis) that fill the cell.
     pub xr: (f32, f32),
     pub yr: (f32, f32),
+    /// A dial whose radius means demand or energy: more is further out, as on any round
+    /// chart (the straight view's "more is higher" would otherwise turn into "more is
+    /// nearer the middle").
+    pub outward: bool,
 }
 
 impl Inner {
@@ -268,7 +272,8 @@ impl Inner {
 
     pub fn radius(&self, v: f32) -> f32 {
         let (r_in, r_out) = self.radii();
-        r_in + self.nv(v) * (r_out - r_in)
+        let nv = if self.outward { 1. - self.nv(v) } else { self.nv(v) };
+        r_in + nv * (r_out - r_in)
     }
 
     pub fn angle(&self, u: f32) -> f32 {
@@ -303,7 +308,8 @@ impl Inner {
                 let (dx, dy) = (x - cx, y - cy);
                 let (r_in, r_out) = self.radii();
                 let nu = ((dy.atan2(dx) + FRAC_PI_2) / TAU).rem_euclid(1.);
-                (nu, ((dx * dx + dy * dy).sqrt() - r_in) / (r_out - r_in).max(1e-3))
+                let nv = ((dx * dx + dy * dy).sqrt() - r_in) / (r_out - r_in).max(1e-3);
+                (nu, if self.outward { 1. - nv } else { nv })
             }
         };
         (self.xr.0 + nu * (self.xr.1 - self.xr.0), self.yr.0 + nv * (self.yr.1 - self.yr.0))
